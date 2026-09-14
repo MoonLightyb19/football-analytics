@@ -5,11 +5,8 @@ import { API_URL } from '../lib/socket'
 
 type Outcome = 'H' | 'D' | 'A'
 
-interface Summary {
-  days: number
-  competition: string | null
+interface Metrics {
   settled: number
-  pending: number
   model: { hitRate: number; brier: number; logLoss: number } | null
   market: { n: number; hitRate: number; brier: number; logLoss: number } | null
   betting: {
@@ -20,7 +17,43 @@ interface Summary {
   outcomes: Record<Outcome, number>
   picks: Record<Outcome, number>
   calibration: { range: string; n: number; predicted: number; actual: number }[]
-  byCompetition: { code: string; name: string; n: number; hitRate: number; brier: number }[]
+  byCompetition: { code: string; name: string; n: number; hitRate: number; brier: number; marketBrier: number | null; bets: number; profit: number }[]
+}
+
+interface Summary extends Metrics {
+  days: number
+  competition: string | null
+  modelName: string | null
+  models: string[]
+  pending: number
+}
+
+interface BacktestData extends Metrics {
+  season: string
+  group: string | null
+  runs: { id: number; season: string; grp: string; matches: number; finished_at: string | null }[]
+  progress: { season: string; group: string; done: number; total: number } | null
+  sample: {
+    division: string
+    date: string
+    home: string
+    away: string
+    hg: number
+    ag: number
+    outcome: Outcome
+    p_home: number
+    p_draw: number
+    p_away: number
+    odds_home: number | null
+    odds_draw: number | null
+    odds_away: number | null
+  }[]
+}
+
+interface HistoryStatus {
+  history: { total: number; mapped: number }
+  model: { lastFitAt: string | null; groups: Record<string, { teams: number; homeAdv: number; rho: number; avgGoals: number }>; teamMap: Record<string, { mapped: number; unmatched: string[] }> }
+  groups: Record<string, { divisions: string[]; competitions: string[] }>
 }
 
 interface Settled {
@@ -37,6 +70,7 @@ interface Settled {
   p: Record<Outcome, number>
   odds: Record<Outcome, number> | null
   confidence: string | null
+  model: string
 }
 
 interface Status {
@@ -49,18 +83,27 @@ interface Status {
 
 const DAY_OPTIONS = [7, 30, 90, 365]
 const OUTCOME_LABEL: Record<Outcome, string> = { H: 'Home', D: 'Draw', A: 'Away' }
+const MODEL_LABEL: Record<string, string> = {
+  'poisson-dc-v1': 'v1 · standings',
+  'dc-history-v2': 'v2 · history (Dixon-Coles)'
+}
+const BACKTEST_SEASON = '2526'
 
 function Accuracy() {
+  const [tab, setTab] = useState<'live' | 'backtest'>('live')
   const [days, setDays] = useState(90)
   const [competition, setCompetition] = useState<string>('ALL')
+  const [model, setModel] = useState<string>('ALL')
   const [summary, setSummary] = useState<Summary | null>(null)
   const [recent, setRecent] = useState<Settled[]>([])
   const [status, setStatus] = useState<Status | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (tab !== 'live') return
     const params: Record<string, string | number> = { days }
     if (competition !== 'ALL') params.competition = competition
+    if (model !== 'ALL') params.model = model
     Promise.all([
       axios.get(`${API_URL}/accuracy`, { params }),
       axios.get(`${API_URL}/accuracy/recent`, { params: { ...params, limit: 200 } }),
@@ -73,7 +116,7 @@ function Accuracy() {
         setError(null)
       })
       .catch(err => setError(err.response?.data?.message || err.message))
-  }, [days, competition])
+  }, [tab, days, competition, model])
 
   const comps = summary?.byCompetition || []
 
@@ -83,11 +126,34 @@ function Accuracy() {
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Model accuracy</h2>
           <p className="text-sm text-gray-500">
-            {status
-              ? `${status.settled} settled · ${status.locked} in play or awaiting result · ${status.open} upcoming · ${status.withOdds} with market odds`
-              : '…'}
+            {tab === 'live'
+              ? status
+                ? `${status.settled} settled · ${status.locked} in play or awaiting result · ${status.open} upcoming · ${status.withOdds} with market odds`
+                : '…'
+              : 'Walk-forward test on a past season: every week the model is fitted only on matches before that week.'}
           </p>
         </div>
+        <div className="flex gap-1 bg-white rounded-lg shadow-sm p-1">
+          <button
+            onClick={() => setTab('live')}
+            className={`px-3 py-1.5 text-sm rounded-md transition ${tab === 'live' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+          >
+            Live tracking
+          </button>
+          <button
+            onClick={() => setTab('backtest')}
+            className={`px-3 py-1.5 text-sm rounded-md transition ${tab === 'backtest' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+          >
+            Backtest 2025–26
+          </button>
+        </div>
+      </div>
+
+      {tab === 'backtest' && <Backtest />}
+
+      {tab === 'live' && (
+        <>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
         <div className="flex gap-1 bg-white rounded-lg shadow-sm p-1">
           {DAY_OPTIONS.map(d => (
             <button
@@ -101,6 +167,25 @@ function Accuracy() {
             </button>
           ))}
         </div>
+        {summary && summary.models.length > 1 && (
+          <div className="flex gap-1 bg-white rounded-lg shadow-sm p-1">
+            <button
+              onClick={() => setModel('ALL')}
+              className={`px-3 py-1.5 text-sm rounded-md transition ${model === 'ALL' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+            >
+              All models
+            </button>
+            {summary.models.map(m => (
+              <button
+                key={m}
+                onClick={() => setModel(m)}
+                className={`px-3 py-1.5 text-sm rounded-md transition ${model === m ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+              >
+                {MODEL_LABEL[m] || m}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {comps.length > 0 && (
@@ -128,123 +213,7 @@ function Accuracy() {
 
       {summary && summary.settled > 0 && summary.model && (
         <>
-          {/* Headline numbers */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-            <Tile label="Settled matches" value={summary.settled} />
-            <Tile
-              label="Hit rate (model pick)"
-              value={`${summary.model.hitRate}%`}
-              sub={summary.market ? `market ${summary.market.hitRate}%` : undefined}
-              good={summary.market ? summary.model.hitRate >= summary.market.hitRate : undefined}
-            />
-            <Tile
-              label="Brier score"
-              value={summary.model.brier}
-              sub={summary.market ? `market ${summary.market.brier}` : 'lower is better'}
-              good={summary.market ? summary.model.brier <= summary.market.brier : undefined}
-              hint="0 = perfect, 0.667 = always 1/3 each"
-            />
-            <Tile
-              label="Log loss"
-              value={summary.model.logLoss}
-              sub={summary.market ? `market ${summary.market.logLoss}` : 'lower is better'}
-              good={summary.market ? summary.model.logLoss <= summary.market.logLoss : undefined}
-              hint="1.099 = always 1/3 each"
-            />
-          </div>
-
-          {/* Betting simulation */}
-          {summary.betting && (
-            <Section title={`Betting at market odds · flat 1-unit stakes · ${summary.market?.n} matches with odds`}>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <Strategy
-                  title={`Value bets (model edge ≥ ${Math.round(summary.betting.edgeThreshold * 100)}%)`}
-                  s={summary.betting.edge}
-                />
-                <Strategy title="Always back the model's pick" s={summary.betting.favourite} />
-              </div>
-              <p className="text-xs text-gray-400 mt-3">
-                Odds are the pre-match bookmaker prices from the data provider. Profit is what a 1-unit bet on each
-                qualifying selection would have returned. This is the number that matters.
-              </p>
-            </Section>
-          )}
-
-          {/* Calibration */}
-          <Section title="Calibration · when the model says X%, how often does it happen?">
-            {summary.calibration.length === 0 ? (
-              <p className="text-sm text-gray-400">Not enough data yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {summary.calibration.map(b => (
-                  <div key={b.range} className="grid grid-cols-[90px_1fr_120px] items-center gap-3 text-sm">
-                    <span className="text-gray-500 tabular-nums">{b.range}</span>
-                    <div className="relative h-4 bg-gray-100 rounded overflow-hidden">
-                      <div className="absolute inset-y-0 left-0 bg-blue-500/80" style={{ width: `${b.actual}%` }} />
-                      <div
-                        className="absolute inset-y-0 w-0.5 bg-gray-900"
-                        style={{ left: `${b.predicted}%` }}
-                        title={`predicted ${b.predicted}%`}
-                      />
-                    </div>
-                    <span className="tabular-nums text-gray-700">
-                      {b.actual}% <span className="text-gray-400">of {b.n}</span>
-                    </span>
-                  </div>
-                ))}
-                <p className="text-xs text-gray-400 pt-1">
-                  Bar = actual hit rate of the model's pick in that confidence band; black line = what the model
-                  predicted. A well-calibrated model has the bar ending at the line.
-                </p>
-              </div>
-            )}
-          </Section>
-
-          {/* Picks vs outcomes + per league */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-5">
-            <Section title="Picks vs actual outcomes" flat>
-              <table className="w-full text-sm">
-                <thead className="text-xs text-gray-500">
-                  <tr>
-                    <th className="text-left font-medium py-1">Outcome</th>
-                    <th className="text-right font-medium">Model picked</th>
-                    <th className="text-right font-medium">Actually happened</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(['H', 'D', 'A'] as Outcome[]).map(o => (
-                    <tr key={o} className="border-t">
-                      <td className="py-1.5">{OUTCOME_LABEL[o]}</td>
-                      <td className="text-right tabular-nums">{summary.picks[o]}</td>
-                      <td className="text-right tabular-nums">{summary.outcomes[o]}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Section>
-            <Section title="By league" flat>
-              <table className="w-full text-sm">
-                <thead className="text-xs text-gray-500">
-                  <tr>
-                    <th className="text-left font-medium py-1">League</th>
-                    <th className="text-right font-medium">Matches</th>
-                    <th className="text-right font-medium">Hit rate</th>
-                    <th className="text-right font-medium">Brier</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.byCompetition.map(c => (
-                    <tr key={c.code} className="border-t">
-                      <td className="py-1.5">{c.name}</td>
-                      <td className="text-right tabular-nums">{c.n}</td>
-                      <td className="text-right tabular-nums">{c.hitRate}%</td>
-                      <td className="text-right tabular-nums">{c.brier}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Section>
-          </div>
+          <MetricsView m={summary} />
 
           {/* Settled list */}
           <Section title={`Settled predictions · ${recent.length}`}>
@@ -264,7 +233,7 @@ function Accuracy() {
                 </thead>
                 <tbody>
                   {recent.map(r => (
-                    <tr key={r.matchId} className="border-t hover:bg-gray-50">
+                    <tr key={`${r.matchId}-${r.model}`} className="border-t hover:bg-gray-50">
                       <td className="py-1.5 text-gray-500 whitespace-nowrap">
                         {new Date(r.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
                       </td>
@@ -273,6 +242,9 @@ function Accuracy() {
                           {r.home} – {r.away}
                         </Link>
                         <span className="text-xs text-gray-400 ml-2 hidden md:inline">{r.competition}</span>
+                        {model === 'ALL' && (
+                          <span className="text-[10px] text-gray-400 ml-2">{r.model === 'dc-history-v2' ? 'v2' : 'v1'}</span>
+                        )}
                       </td>
                       <td className="text-center font-semibold tabular-nums">{r.score}</td>
                       {(['H', 'D', 'A'] as Outcome[]).map(o => (
@@ -304,7 +276,274 @@ function Accuracy() {
           </Section>
         </>
       )}
+        </>
+      )}
     </div>
+  )
+}
+
+/* ---------- shared metrics view ---------- */
+
+function MetricsView({ m, groupLabel = 'League' }: { m: Metrics; groupLabel?: string }) {
+  if (!m.model) return null
+  return (
+    <>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <Tile label="Matches scored" value={m.settled} />
+        <Tile
+          label="Hit rate (model pick)"
+          value={`${m.model.hitRate}%`}
+          sub={m.market ? `market ${m.market.hitRate}%` : undefined}
+          good={m.market ? m.model.hitRate >= m.market.hitRate : undefined}
+        />
+        <Tile
+          label="Brier score"
+          value={m.model.brier}
+          sub={m.market ? `market ${m.market.brier}` : 'lower is better'}
+          good={m.market ? m.model.brier <= m.market.brier : undefined}
+          hint="0 = perfect, 0.667 = always 1/3 each"
+        />
+        <Tile
+          label="Log loss"
+          value={m.model.logLoss}
+          sub={m.market ? `market ${m.market.logLoss}` : 'lower is better'}
+          good={m.market ? m.model.logLoss <= m.market.logLoss : undefined}
+          hint="1.099 = always 1/3 each"
+        />
+      </div>
+
+      {m.betting && (
+        <Section title={`Betting at market odds · flat 1-unit stakes · ${m.market?.n} matches with odds`}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Strategy title={`Value bets (model edge ≥ ${Math.round(m.betting.edgeThreshold * 100)}%)`} s={m.betting.edge} />
+            <Strategy title="Always back the model's pick" s={m.betting.favourite} />
+          </div>
+          <p className="text-xs text-gray-400 mt-3">
+            Profit is what a 1-unit bet on each qualifying selection would have returned at the bookmaker's pre-match
+            price. This is the number that matters.
+          </p>
+        </Section>
+      )}
+
+      <Section title="Calibration · when the model says X%, how often does it happen?">
+        {m.calibration.length === 0 ? (
+          <p className="text-sm text-gray-400">Not enough data yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {m.calibration.map(b => (
+              <div key={b.range} className="grid grid-cols-[90px_1fr_120px] items-center gap-3 text-sm">
+                <span className="text-gray-500 tabular-nums">{b.range}</span>
+                <div className="relative h-4 bg-gray-100 rounded overflow-hidden">
+                  <div className="absolute inset-y-0 left-0 bg-blue-500/80" style={{ width: `${b.actual}%` }} />
+                  <div className="absolute inset-y-0 w-0.5 bg-gray-900" style={{ left: `${b.predicted}%` }} title={`predicted ${b.predicted}%`} />
+                </div>
+                <span className="tabular-nums text-gray-700">
+                  {b.actual}% <span className="text-gray-400">of {b.n}</span>
+                </span>
+              </div>
+            ))}
+            <p className="text-xs text-gray-400 pt-1">
+              Bar = actual hit rate of the model's pick in that confidence band; black line = what the model predicted.
+              A well-calibrated model has the bar ending at the line.
+            </p>
+          </div>
+        )}
+      </Section>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-5">
+        <Section title="Picks vs actual outcomes" flat>
+          <table className="w-full text-sm">
+            <thead className="text-xs text-gray-500">
+              <tr>
+                <th className="text-left font-medium py-1">Outcome</th>
+                <th className="text-right font-medium">Model picked</th>
+                <th className="text-right font-medium">Actually happened</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(['H', 'D', 'A'] as Outcome[]).map(o => (
+                <tr key={o} className="border-t">
+                  <td className="py-1.5">{OUTCOME_LABEL[o]}</td>
+                  <td className="text-right tabular-nums">{m.picks[o]}</td>
+                  <td className="text-right tabular-nums">{m.outcomes[o]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+        <Section title={`By ${groupLabel.toLowerCase()}`} flat>
+          <table className="w-full text-sm">
+            <thead className="text-xs text-gray-500">
+              <tr>
+                <th className="text-left font-medium py-1">{groupLabel}</th>
+                <th className="text-right font-medium">Matches</th>
+                <th className="text-right font-medium">Hit</th>
+                <th className="text-right font-medium">Brier</th>
+                <th className="text-right font-medium">Market</th>
+                <th className="text-right font-medium">P/L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {m.byCompetition.map(c => (
+                <tr key={c.code} className="border-t">
+                  <td className="py-1.5">{c.name}</td>
+                  <td className="text-right tabular-nums">{c.n}</td>
+                  <td className="text-right tabular-nums">{c.hitRate}%</td>
+                  <td className="text-right tabular-nums">{c.brier}</td>
+                  <td className="text-right tabular-nums text-gray-500">{c.marketBrier ?? '–'}</td>
+                  <td className={`text-right tabular-nums ${c.profit > 0 ? 'text-green-600' : c.profit < 0 ? 'text-red-600' : ''}`}>
+                    {c.bets ? `${c.profit > 0 ? '+' : ''}${c.profit.toFixed(1)}u` : '–'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Section>
+      </div>
+    </>
+  )
+}
+
+/* ---------- backtest tab ---------- */
+
+const DIVISION_NAME: Record<string, string> = {
+  E0: 'Premier League', E1: 'Championship', SP1: 'La Liga', SP2: 'Segunda', I1: 'Serie A', I2: 'Serie B',
+  D1: 'Bundesliga', D2: '2. Bundesliga', F1: 'Ligue 1', F2: 'Ligue 2', N1: 'Eredivisie', P1: 'Primeira Liga'
+}
+const GROUP_NAME: Record<string, string> = { E: 'England', SP: 'Spain', I: 'Italy', D: 'Germany', F: 'France', N: 'Netherlands', P: 'Portugal' }
+
+function Backtest() {
+  const [group, setGroup] = useState<string>('ALL')
+  const [data, setData] = useState<BacktestData | null>(null)
+  const [hist, setHist] = useState<HistoryStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [starting, setStarting] = useState(false)
+
+  const load = () => {
+    const params: Record<string, string> = { season: BACKTEST_SEASON }
+    if (group !== 'ALL') params.group = group
+    Promise.all([axios.get(`${API_URL}/backtest`, { params }), axios.get(`${API_URL}/history/status`)])
+      .then(([b, h]) => {
+        setData(b.data.data)
+        setHist(h.data.data)
+        setError(null)
+      })
+      .catch(err => setError(err.response?.data?.message || err.message))
+  }
+
+  useEffect(load, [group])
+
+  // poll while a run is in progress
+  useEffect(() => {
+    if (!data?.progress) return
+    const t = setInterval(load, 3000)
+    return () => clearInterval(t)
+  }, [data?.progress?.done, data?.progress?.group])
+
+  const start = () => {
+    setStarting(true)
+    axios
+      .post(`${API_URL}/backtest/run`, null, { params: { season: BACKTEST_SEASON } })
+      .then(() => setTimeout(load, 1500))
+      .catch(err => setError(err.response?.data?.message || err.message))
+      .finally(() => setStarting(false))
+  }
+
+  const groups = hist ? Object.keys(hist.groups) : []
+  const named = { ...data, byCompetition: (data?.byCompetition || []).map(c => ({ ...c, name: DIVISION_NAME[c.code] || c.code })) } as BacktestData
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div className="flex flex-wrap gap-2">
+          <Chip active={group === 'ALL'} onClick={() => setGroup('ALL')}>All leagues</Chip>
+          {groups.map(g => (
+            <Chip key={g} active={group === g} onClick={() => setGroup(g)}>
+              {GROUP_NAME[g] || g}
+            </Chip>
+          ))}
+        </div>
+        <button
+          onClick={start}
+          disabled={starting || !!data?.progress}
+          className="px-3 py-1.5 text-sm rounded-md bg-gray-900 text-white disabled:opacity-40"
+        >
+          {data?.progress ? `Running ${GROUP_NAME[data.progress.group] || data.progress.group} · ${data.progress.done}/${data.progress.total}` : 'Run backtest 2025–26'}
+        </button>
+      </div>
+
+      {hist && (
+        <p className="text-xs text-gray-500 mb-4">
+          History: {hist.history.total.toLocaleString()} matches loaded · model v2 fitted for{' '}
+          {Object.keys(hist.model.groups).length} countries
+          {hist.model.lastFitAt && ` (${new Date(hist.model.lastFitAt).toLocaleString('en-GB')})`}
+          {Object.entries(hist.model.teamMap || {}).some(([, r]) => r.unmatched.length > 0) && (
+            <span className="text-amber-600">
+              {' '}· unmatched teams:{' '}
+              {Object.entries(hist.model.teamMap)
+                .filter(([, r]) => r.unmatched.length)
+                .map(([g, r]) => `${g}: ${r.unmatched.join(', ')}`)
+                .join(' | ')}
+            </span>
+          )}
+        </p>
+      )}
+
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-5">{error}</div>}
+
+      {data && data.settled === 0 && !data.progress && (
+        <div className="bg-white rounded-xl shadow p-10 text-center text-gray-500">
+          <p className="text-lg font-medium text-gray-700 mb-1">No backtest yet</p>
+          <p className="text-sm">Click "Run backtest" — it takes about a minute for all leagues.</p>
+        </div>
+      )}
+
+      {data && data.settled > 0 && (
+        <>
+          <MetricsView m={named} groupLabel="Division" />
+          <Section title={`Sample · latest ${data.sample.length} predictions`}>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-xs text-gray-500">
+                  <tr>
+                    <th className="text-left font-medium py-1">Date</th>
+                    <th className="text-left font-medium">Match</th>
+                    <th className="text-center font-medium">Score</th>
+                    <th className="text-center font-medium">1</th>
+                    <th className="text-center font-medium">X</th>
+                    <th className="text-center font-medium">2</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.sample.map((r, i) => {
+                    const pick: Outcome = r.p_home >= r.p_draw && r.p_home >= r.p_away ? 'H' : r.p_away >= r.p_draw ? 'A' : 'D'
+                    return (
+                      <tr key={i} className="border-t">
+                        <td className="py-1.5 text-gray-500 whitespace-nowrap">{r.date}</td>
+                        <td>
+                          {r.home} – {r.away} <span className="text-xs text-gray-400 ml-1">{DIVISION_NAME[r.division] || r.division}</span>
+                        </td>
+                        <td className="text-center font-semibold tabular-nums">{r.hg}–{r.ag}</td>
+                        {(['H', 'D', 'A'] as Outcome[]).map(o => {
+                          const p = o === 'H' ? r.p_home : o === 'D' ? r.p_draw : r.p_away
+                          const odds = o === 'H' ? r.odds_home : o === 'D' ? r.odds_draw : r.odds_away
+                          return (
+                            <td key={o} className={`text-center tabular-nums ${r.outcome === o ? 'font-bold text-gray-900' : 'text-gray-500'} ${pick === o ? 'underline decoration-2 underline-offset-2' : ''}`}>
+                              {Math.round(p)}%
+                              {odds && <div className="text-[10px] text-gray-400">{odds}</div>}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+        </>
+      )}
+    </>
   )
 }
 

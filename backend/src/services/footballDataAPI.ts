@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import logger from '../utils/logger';
 import { predictFromStandings, Prediction, StandingsResponse } from './predictionModel';
+import { predictV2, prepareModelV2 } from './historyModel';
 
 // Competitions to load. Override with COMPETITIONS=PL,PD,... in .env
 const DEFAULT_COMPETITIONS = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'DED', 'PPL', 'ELC'];
@@ -112,8 +113,13 @@ class FootballDataAPI {
   }
 
   startBackgroundRefresh(intervalMs: number = CACHE_TTL_MS) {
-    this.refreshWindow().catch(() => {});
+    this.refreshWindow()
+      .then(() => this.prepareHistoryModel())
+      .then(() => this.refreshWindow()) // re-run so v2 predictions get recorded right away
+      .catch(() => {});
     setInterval(() => this.refreshWindow().catch(() => {}), intervalMs);
+    // Re-sync the current season's results and refit v2 every 6 hours
+    setInterval(() => this.prepareHistoryModel().catch(() => {}), 6 * 60 * 60 * 1000);
   }
 
   get windowAge() {
@@ -137,20 +143,59 @@ class FootballDataAPI {
     console.log(`📊 Standings loaded for ${ok}/${codes.length} competitions`);
   }
 
-  /** Model prediction for a match, from the latest standings of its competition. */
-  predictionFor(match: any): Prediction | null {
+  /** v1: standings-based Poisson model (always available once standings are loaded). */
+  predictionV1(match: any): Prediction | null {
     if (!match?.homeTeam?.id || !match?.awayTeam?.id) return null;
     const standings = this.standingsByCode.get(match.competition?.code) || null;
     try {
       return predictFromStandings(standings, match.homeTeam.id, match.awayTeam.id);
     } catch (error: any) {
-      logger.warn('Prediction failed', { matchId: match.id, message: error.message });
+      logger.warn('Prediction v1 failed', { matchId: match.id, message: error.message });
       return null;
     }
   }
 
-  withPredictions<T extends { id: number }>(matches: T[]): (T & { prediction: Prediction | null })[] {
-    return matches.map(m => ({ ...m, prediction: this.predictionFor(m) }));
+  /** All model predictions for a match (v1 standings, v2 history) — for tracking both. */
+  allPredictionsFor(match: any): Prediction[] {
+    const out: Prediction[] = [];
+    const v1 = this.predictionV1(match);
+    if (v1) out.push(v1);
+    try {
+      const v2 = predictV2(match);
+      if (v2) out.push(v2);
+    } catch (error: any) {
+      logger.warn('Prediction v2 failed', { matchId: match.id, message: error.message });
+    }
+    return out;
+  }
+
+  /** The prediction shown on the site: v2 (history model) when available, else v1. */
+  predictionFor(match: any): Prediction | null {
+    const all = this.allPredictionsFor(match);
+    return all.find(p => p.model.startsWith('dc-history')) || all[0] || null;
+  }
+
+  withPredictions<T extends { id: number }>(matches: T[]): (T & { prediction: Prediction | null; predictions: Prediction[] })[] {
+    return matches.map(m => {
+      const predictions = this.allPredictionsFor(m);
+      return { ...m, prediction: predictions.find(p => p.model.startsWith('dc-history')) || predictions[0] || null, predictions };
+    });
+  }
+
+  /** Download history (first time), map team names and fit model v2. */
+  async prepareHistoryModel(forceSync = false) {
+    try {
+      const r = await prepareModelV2(this.standingsByCode, forceSync);
+      console.log(`🧠 Model v2 ready: ${r.fitted} groups fitted`);
+      return r;
+    } catch (error: any) {
+      logger.error('Model v2 preparation failed', { message: error.message });
+      return null;
+    }
+  }
+
+  get standings() {
+    return this.standingsByCode;
   }
 
   private async fetchWindow() {

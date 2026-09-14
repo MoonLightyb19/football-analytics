@@ -16,21 +16,30 @@ outcome model for the big European leagues.
 - Prediction for every match: home / draw / away probabilities, expected goals,
   over 2.5, both-teams-to-score, most likely scorelines, and a confidence level.
 
-## Prediction model (v1)
+## Prediction models
 
-Poisson model with Dixon-Coles low-score correction
+Two models run side by side; both are tracked so they can be compared.
+
+**v2 — `dc-history-v2` (shown on the site when available)**
+Dixon-Coles model fitted by maximum likelihood on three seasons of results from
+football-data.co.uk (`backend/src/services/dixonColes.ts`, `historyModel.ts`).
+Attack, defence, home advantage and the low-score correction are estimated per
+country (top division + second division where available), with older matches
+weighted down (half-life 180 days) and shrinkage toward average for teams with
+little data. Refitted every 6 hours.
+
+**v1 — `poisson-dc-v1` (fallback, e.g. Champions League)**
+Poisson model driven by the current league table
 (`backend/src/services/predictionModel.ts`).
 
-- Attack and defence strength for each team = goals scored / conceded per game
-  relative to the league average, from the current league table.
-- Home advantage from the league's HOME / AWAY tables.
-- Strengths are shrunk toward average early in the season, and nudged by the
-  last-5-games form.
-- Expected goals for each side feed a Poisson score matrix → outcome
-  probabilities.
+## Tracking and backtesting
 
-Predictions are recomputed from fresh standings on every refresh. Nothing is
-stored yet; storing predictions and scoring them against results is the next step.
+- Every refresh, each model's prediction for every upcoming match is saved to
+  SQLite (`backend/data/bet-to-beat.sqlite`). At kick-off it is frozen; after the
+  match the result is pulled and the prediction scored.
+- `/accuracy` shows hit rate, Brier score, log loss, calibration, and flat-stake
+  P/L at bookmaker odds for the live predictions and — in the Backtest tab — a
+  walk-forward test over 2024-25 against Pinnacle closing odds.
 
 ## Stack
 
@@ -75,6 +84,10 @@ GET /api/leagues
 GET /api/leagues/:code/standings
 GET /api/teams/:id
 GET /api/health
+GET /api/accuracy?days=90&competition=PL&model=dc-history-v2
+GET /api/accuracy/recent · /api/accuracy/status · POST /api/accuracy/settle
+GET /api/history/status · GET /api/history/teams · POST /api/history/sync
+POST /api/backtest/run?season=2425[&group=E] · GET /api/backtest?season=2425[&group=E]
 ```
 
 WebSocket events: `matches:live` (all live matches, every 60 s),

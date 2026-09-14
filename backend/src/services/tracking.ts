@@ -44,8 +44,8 @@ export function recordPredictions(matches: any[]) {
   let saved = 0;
   let locked = 0;
   for (const m of matches) {
-    const p: Prediction | null = m.prediction;
-    if (!p) continue;
+    const preds: Prediction[] = (m.predictions && m.predictions.length ? m.predictions : [m.prediction]).filter(Boolean);
+    if (!preds.length) continue;
     const kickedOff = LIVE_OR_DONE.has(m.status) || new Date(m.utcDate).getTime() <= Date.now();
 
     if (kickedOff) {
@@ -57,6 +57,7 @@ export function recordPredictions(matches: any[]) {
     }
 
     const odds = m.odds?.msw || {};
+    for (const p of preds) {
     const res = upsertStmt.run(
       m.id,
       p.model,
@@ -84,6 +85,7 @@ export function recordPredictions(matches: any[]) {
       now
     );
     if (Number(res.changes) > 0) saved++;
+    }
   }
   if (saved || locked) logger.info(`Predictions saved: ${saved}, newly locked: ${locked}`);
 }
@@ -168,18 +170,31 @@ interface SettledRow {
   outcome: Outcome;
 }
 
-function settledRows(days: number, competition?: string): SettledRow[] {
+function settledRows(days: number, competition?: string, model?: string): SettledRow[] {
   const since = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+  const args: any[] = [since];
+  let where = '';
+  if (competition) {
+    where += ' AND p.competition_code = ?';
+    args.push(competition);
+  }
+  if (model) {
+    where += ' AND p.model = ?';
+    args.push(model);
+  }
   const sql = `
     SELECT p.match_id, p.model, p.competition_code, p.competition_name, p.utc_date,
            p.home_team, p.away_team, p.p_home, p.p_draw, p.p_away, p.confidence,
            p.odds_home, p.odds_draw, p.odds_away,
            r.home_goals, r.away_goals, r.outcome
     FROM predictions p JOIN results r ON r.match_id = p.match_id
-    WHERE p.settled = 1 AND r.outcome IN ('H','D','A') AND p.utc_date >= ?
-      ${competition ? 'AND p.competition_code = ?' : ''}
+    WHERE p.settled = 1 AND r.outcome IN ('H','D','A') AND p.utc_date >= ?${where}
     ORDER BY p.utc_date DESC`;
-  return competition ? db.prepare(sql).all(since, competition) : db.prepare(sql).all(since);
+  return db.prepare(sql).all(...args);
+}
+
+export function modelsTracked(): string[] {
+  return db.prepare(`SELECT DISTINCT model FROM predictions ORDER BY model`).all().map((r: any) => r.model);
 }
 
 function pick(r: { p_home: number; p_draw: number; p_away: number }): Outcome {
@@ -192,12 +207,25 @@ function probOf(r: { p_home: number; p_draw: number; p_away: number }, o: Outcom
   return (o === 'H' ? r.p_home : o === 'D' ? r.p_draw : r.p_away) / 100;
 }
 
-function oddsOf(r: SettledRow, o: Outcome) {
+/** Generic row shape for metric computation (live tracking and backtests). */
+export interface MetricRow {
+  p_home: number;
+  p_draw: number;
+  p_away: number;
+  odds_home: number | null;
+  odds_draw: number | null;
+  odds_away: number | null;
+  outcome: Outcome;
+  groupKey: string;
+  groupName: string;
+}
+
+function oddsOf(r: MetricRow, o: Outcome) {
   return o === 'H' ? r.odds_home : o === 'D' ? r.odds_draw : r.odds_away;
 }
 
 /** Bookmaker implied probabilities with the overround removed. */
-function marketProbs(r: SettledRow): Record<Outcome, number> | null {
+function marketProbs(r: MetricRow): Record<Outcome, number> | null {
   if (!r.odds_home || !r.odds_draw || !r.odds_away) return null;
   const inv = { H: 1 / r.odds_home, D: 1 / r.odds_draw, A: 1 / r.odds_away };
   const sum = inv.H + inv.D + inv.A;
@@ -211,10 +239,8 @@ function brier(p: Record<Outcome, number>, actual: Outcome) {
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 const pct = (x: number) => Math.round(x * 1000) / 10;
 
-export function accuracy(days: number = 90, competition?: string) {
-  const rows = settledRows(days, competition);
+export function computeMetrics(rows: MetricRow[]) {
   const n = rows.length;
-
   let hits = 0;
   let brierSum = 0;
   let logLossSum = 0;
@@ -231,55 +257,59 @@ export function accuracy(days: number = 90, competition?: string) {
     hits: 0,
     predSum: 0
   }));
-  // Betting strategies at market odds (flat 1-unit stakes)
   const edgeBets = { bets: 0, wins: 0, profit: 0 };
   const favBets = { bets: 0, wins: 0, profit: 0 };
-  const byComp = new Map<string, { name: string; n: number; hits: number; brier: number }>();
+  const byGroup = new Map<string, { name: string; n: number; hits: number; brier: number; mBrier: number; mN: number; profit: number; bets: number }>();
 
   for (const r of rows) {
     const p = { H: r.p_home / 100, D: r.p_draw / 100, A: r.p_away / 100 };
     const pk = pick(r);
     const hit = pk === r.outcome;
     hits += hit ? 1 : 0;
-    brierSum += brier(p, r.outcome);
+    const b = brier(p, r.outcome);
+    brierSum += b;
     logLossSum += -Math.log(Math.max(1e-6, probOf(r, r.outcome)));
     outcomes[r.outcome]++;
     picks[pk]++;
 
-    const bin = bins.find(b => p[pk] >= b.from && p[pk] < b.to);
+    const bin = bins.find(x => p[pk] >= x.from && p[pk] < x.to);
     if (bin) {
       bin.n++;
       bin.hits += hit ? 1 : 0;
       bin.predSum += p[pk];
     }
 
-    const key = r.competition_code || '?';
-    const c = byComp.get(key) || { name: r.competition_name || key, n: 0, hits: 0, brier: 0 };
-    c.n++;
-    c.hits += hit ? 1 : 0;
-    c.brier += brier(p, r.outcome);
-    byComp.set(key, c);
+    const g = byGroup.get(r.groupKey) || { name: r.groupName, n: 0, hits: 0, brier: 0, mBrier: 0, mN: 0, profit: 0, bets: 0 };
+    g.n++;
+    g.hits += hit ? 1 : 0;
+    g.brier += b;
 
     const mp = marketProbs(r);
     if (mp) {
       mN++;
-      const mPick = (['H', 'D', 'A'] as Outcome[]).reduce((b, o) => (mp[o] > mp[b] ? o : b), 'H' as Outcome);
+      const mPick = (['H', 'D', 'A'] as Outcome[]).reduce((best, o) => (mp[o] > mp[best] ? o : best), 'H' as Outcome);
       mHits += mPick === r.outcome ? 1 : 0;
-      mBrier += brier(mp, r.outcome);
+      const mb = brier(mp, r.outcome);
+      mBrier += mb;
       mLogLoss += -Math.log(Math.max(1e-6, mp[r.outcome]));
+      g.mBrier += mb;
+      g.mN++;
 
-      // Edge strategy: bet any outcome whose EV at market odds >= threshold
       for (const o of ['H', 'D', 'A'] as Outcome[]) {
         const odds = oddsOf(r, o)!;
         if (p[o] * odds - 1 >= EDGE_THRESHOLD) {
           edgeBets.bets++;
+          g.bets++;
           if (o === r.outcome) {
             edgeBets.wins++;
             edgeBets.profit += odds - 1;
-          } else edgeBets.profit -= 1;
+            g.profit += odds - 1;
+          } else {
+            edgeBets.profit -= 1;
+            g.profit -= 1;
+          }
         }
       }
-      // Favourite strategy: always bet the model's pick
       const fo = oddsOf(r, pk)!;
       favBets.bets++;
       if (hit) {
@@ -287,19 +317,13 @@ export function accuracy(days: number = 90, competition?: string) {
         favBets.profit += fo - 1;
       } else favBets.profit -= 1;
     }
+    byGroup.set(r.groupKey, g);
   }
 
   return {
-    days,
-    competition: competition || null,
     settled: n,
-    pending: (db.prepare(`SELECT COUNT(*) AS c FROM predictions WHERE settled = 0`).get() as any).c,
-    model: n
-      ? { hitRate: pct(hits / n), brier: r3(brierSum / n), logLoss: r3(logLossSum / n) }
-      : null,
-    market: mN
-      ? { n: mN, hitRate: pct(mHits / mN), brier: r3(mBrier / mN), logLoss: r3(mLogLoss / mN) }
-      : null,
+    model: n ? { hitRate: pct(hits / n), brier: r3(brierSum / n), logLoss: r3(logLossSum / n) } : null,
+    market: mN ? { n: mN, hitRate: pct(mHits / mN), brier: r3(mBrier / mN), logLoss: r3(mLogLoss / mN) } : null,
     betting: mN
       ? {
           edgeThreshold: EDGE_THRESHOLD,
@@ -310,16 +334,50 @@ export function accuracy(days: number = 90, competition?: string) {
     outcomes,
     picks,
     calibration: bins
-      .filter(b => b.n > 0)
-      .map(b => ({ range: `${Math.round(b.from * 100)}–${Math.min(100, Math.round(b.to * 100))}%`, n: b.n, predicted: pct(b.predSum / b.n), actual: pct(b.hits / b.n) })),
-    byCompetition: Array.from(byComp.entries())
-      .map(([code, c]) => ({ code, name: c.name, n: c.n, hitRate: pct(c.hits / c.n), brier: r3(c.brier / c.n) }))
+      .filter(x => x.n > 0)
+      .map(x => ({ range: `${Math.round(x.from * 100)}–${Math.min(100, Math.round(x.to * 100))}%`, n: x.n, predicted: pct(x.predSum / x.n), actual: pct(x.hits / x.n) })),
+    byCompetition: Array.from(byGroup.entries())
+      .map(([code, g]) => ({
+        code,
+        name: g.name,
+        n: g.n,
+        hitRate: pct(g.hits / g.n),
+        brier: r3(g.brier / g.n),
+        marketBrier: g.mN ? r3(g.mBrier / g.mN) : null,
+        bets: g.bets,
+        profit: r3(g.profit)
+      }))
       .sort((a, b) => b.n - a.n)
   };
 }
 
-export function recentSettled(days: number = 90, competition?: string, limit: number = 100) {
-  return settledRows(days, competition)
+export function accuracy(days: number = 90, competition?: string, model?: string) {
+  const rows = settledRows(days, competition, model);
+  const metrics = computeMetrics(
+    rows.map(r => ({
+      p_home: r.p_home,
+      p_draw: r.p_draw,
+      p_away: r.p_away,
+      odds_home: r.odds_home,
+      odds_draw: r.odds_draw,
+      odds_away: r.odds_away,
+      outcome: r.outcome,
+      groupKey: r.competition_code || '?',
+      groupName: r.competition_name || r.competition_code || '?'
+    }))
+  );
+  return {
+    days,
+    competition: competition || null,
+    modelName: model || null,
+    models: modelsTracked(),
+    pending: (db.prepare(`SELECT COUNT(*) AS c FROM predictions WHERE settled = 0`).get() as any).c,
+    ...metrics
+  };
+}
+
+export function recentSettled(days: number = 90, competition?: string, limit: number = 100, model?: string) {
+  return settledRows(days, competition, model)
     .slice(0, limit)
     .map(r => ({
       matchId: r.match_id,
@@ -334,7 +392,8 @@ export function recentSettled(days: number = 90, competition?: string, limit: nu
       hit: pick(r) === r.outcome,
       p: { H: r.p_home, D: r.p_draw, A: r.p_away },
       odds: r.odds_home ? { H: r.odds_home, D: r.odds_draw, A: r.odds_away } : null,
-      confidence: r.confidence
+      confidence: r.confidence,
+      model: r.model
     }));
 }
 

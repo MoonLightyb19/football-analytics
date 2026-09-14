@@ -319,7 +319,11 @@ function MatchDetail() {
       {/* Prediction */}
       <Section
         title="Prediction"
-        note={p ? `Poisson model · ${CONFIDENCE_LABEL[p.confidence]}` : undefined}
+        note={
+          p
+            ? `${p.model === 'dc-history-v2' ? 'History model (Dixon-Coles, 3 seasons)' : 'Standings model'} · ${CONFIDENCE_LABEL[p.confidence]}`
+            : undefined
+        }
       >
         {p ? (
           <>

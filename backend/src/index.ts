@@ -18,7 +18,9 @@ if (envResult.error) {
 
 // Import after env is loaded
 import footballDataAPI from './services/footballDataAPI';
-import { recordPredictions, settlePending, accuracy, recentSettled, trackingStatus } from './services/tracking';
+import { recordPredictions, settlePending, accuracy, recentSettled, trackingStatus, computeMetrics } from './services/tracking';
+import { historyStatus, teamMapStatus, GROUPS } from './services/history';
+import { modelV2Status, runBacktest, runBacktestAll, backtestProgress, backtestRows, backtestRunsList } from './services/historyModel';
 
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 
@@ -153,7 +155,8 @@ app.get('/api/accuracy', (req, res) => {
   try {
     const days = parseInt(String(req.query.days || '90'), 10) || 90;
     const competition = req.query.competition ? String(req.query.competition).toUpperCase() : undefined;
-    res.json({ data: accuracy(days, competition), timestamp: new Date().toISOString() });
+    const model = req.query.model ? String(req.query.model) : undefined;
+    res.json({ data: accuracy(days, competition, model), timestamp: new Date().toISOString() });
   } catch (error: any) {
     sendError(res, error, 'Failed to compute accuracy');
   }
@@ -164,7 +167,8 @@ app.get('/api/accuracy/recent', (req, res) => {
     const days = parseInt(String(req.query.days || '90'), 10) || 90;
     const competition = req.query.competition ? String(req.query.competition).toUpperCase() : undefined;
     const limit = parseInt(String(req.query.limit || '100'), 10) || 100;
-    res.json({ data: recentSettled(days, competition, limit), timestamp: new Date().toISOString() });
+    const model = req.query.model ? String(req.query.model) : undefined;
+    res.json({ data: recentSettled(days, competition, limit, model), timestamp: new Date().toISOString() });
   } catch (error: any) {
     sendError(res, error, 'Failed to list settled predictions');
   }
@@ -185,6 +189,88 @@ app.post('/api/accuracy/settle', async (_req, res) => {
     res.json({ data: result, timestamp: new Date().toISOString() });
   } catch (error: any) {
     sendError(res, error, 'Settlement failed');
+  }
+});
+
+// ---------- History data, model v2, backtests ----------
+
+app.get('/api/history/status', (_req, res) => {
+  try {
+    res.json({ data: { history: historyStatus(), model: modelV2Status(), groups: GROUPS }, timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Failed to read history status');
+  }
+});
+
+app.get('/api/history/teams', (_req, res) => {
+  try {
+    res.json({ data: teamMapStatus(), timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Failed to read team map');
+  }
+});
+
+// Re-download history and refit (force)
+app.post('/api/history/sync', async (_req, res) => {
+  try {
+    const r = await footballDataAPI.prepareHistoryModel(true);
+    res.json({ data: r, timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'History sync failed');
+  }
+});
+
+// Start a walk-forward backtest (runs in the background). ?season=2425&group=E (group optional = all)
+app.post('/api/backtest/run', (req, res) => {
+  const season = String(req.query.season || '2425');
+  const group = req.query.group ? String(req.query.group).toUpperCase() : undefined;
+  if (backtestProgress()) {
+    res.status(409).json({ error: 'A backtest is already running', progress: backtestProgress() });
+    return;
+  }
+  const job = group ? runBacktest(season, group) : runBacktestAll(season);
+  job.catch(err => logger.error('Backtest failed', { message: err.message }));
+  res.json({ data: { started: true, season, group: group || 'ALL' }, timestamp: new Date().toISOString() });
+});
+
+app.get('/api/backtest/progress', (_req, res) => {
+  res.json({ data: backtestProgress(), timestamp: new Date().toISOString() });
+});
+
+// Backtest results. ?season=2425&group=E&minEvidence=0
+app.get('/api/backtest', (req, res) => {
+  try {
+    const season = String(req.query.season || '2425');
+    const group = req.query.group ? String(req.query.group).toUpperCase() : undefined;
+    const minEvidence = parseFloat(String(req.query.minEvidence || '0')) || 0;
+    const rows = backtestRows(season, group, minEvidence);
+    const metrics = computeMetrics(
+      rows.map(r => ({
+        p_home: r.p_home,
+        p_draw: r.p_draw,
+        p_away: r.p_away,
+        odds_home: r.odds_home,
+        odds_draw: r.odds_draw,
+        odds_away: r.odds_away,
+        outcome: r.outcome,
+        groupKey: r.division,
+        groupName: r.division
+      }))
+    );
+    res.json({
+      data: {
+        season,
+        group: group || null,
+        minEvidence,
+        runs: backtestRunsList(),
+        progress: backtestProgress(),
+        ...metrics,
+        sample: rows.slice(0, 200)
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error: any) {
+    sendError(res, error, 'Failed to read backtest');
   }
 });
 
