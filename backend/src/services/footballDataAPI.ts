@@ -1,71 +1,285 @@
 import axios, { AxiosInstance } from 'axios';
 import logger from '../utils/logger';
 
+// Competitions to load. Override with COMPETITIONS=PL,PD,... in .env
+const DEFAULT_COMPETITIONS = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'DED', 'PPL', 'ELC'];
+
+// Statuses that count as "upcoming or live"
+const ACTIVE_STATUSES = new Set(['SCHEDULED', 'TIMED', 'IN_PLAY', 'PAUSED']);
+const LIVE_STATUSES = new Set(['IN_PLAY', 'PAUSED']);
+
+const MAX_DAYS = 30; // size of the in-memory fixture window
+const CACHE_TTL_MS = 5 * 60 * 1000; // background refresh interval for the window
+const LIVE_CACHE_TTL_MS = 30 * 1000; // 30 seconds for live
+
+interface CacheEntry<T> {
+  data: T;
+  expires: number;
+}
+
+function toDateString(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
 class FootballDataAPI {
   private client: AxiosInstance;
-  private baseURL: string;
   private apiKey: string;
+  private baseURL: string;
+  private competitions: string[];
+  private cache = new Map<string, CacheEntry<any>>();
+  private window: any[] | null = null;
+  private windowLoadedAt: number | null = null;
+  private refreshing: Promise<void> | null = null;
 
   constructor() {
     this.baseURL = process.env.FOOTBALL_DATA_BASE_URL || 'https://api.football-data.org/v4';
     this.apiKey = process.env.FOOTBALL_DATA_API_KEY || '';
+    this.competitions = (process.env.COMPETITIONS || DEFAULT_COMPETITIONS.join(','))
+      .split(',')
+      .map(c => c.trim().toUpperCase())
+      .filter(Boolean);
+
+    console.log('=== Football Data API Init ===');
+    console.log(`API Key loaded: ${this.apiKey ? 'YES ✅' : 'NO ❌'}`);
+    console.log(`Base URL: ${this.baseURL}`);
+    console.log(`Competitions: ${this.competitions.join(', ')}`);
+    console.log('================================');
 
     this.client = axios.create({
       baseURL: this.baseURL,
+      timeout: 15000,
       headers: {
-        'X-Auth-Token': this.apiKey
+        'X-Auth-Token': this.apiKey,
+        Accept: 'application/json'
       }
     });
   }
 
-  async getLeagues() {
+  private getCached<T>(key: string): T | null {
+    const entry = this.cache.get(key);
+    if (entry && entry.expires > Date.now()) return entry.data as T;
+    return null;
+  }
+
+  private setCached<T>(key: string, data: T, ttl: number) {
+    this.cache.set(key, { data, expires: Date.now() + ttl });
+  }
+
+  /**
+   * Upcoming (and currently live) matches for the next `days` days.
+   * Served instantly from an in-memory window that is refreshed in the
+   * background (see startBackgroundRefresh). Falls back to a live fetch
+   * only if the window has never been loaded.
+   */
+  async getUpcomingMatches(days: number = MAX_DAYS) {
+    const safeDays = Math.min(Math.max(days, 1), MAX_DAYS);
+    if (!this.window) {
+      await this.refreshWindow();
+    }
+    const cutoff = Date.now() + safeDays * 24 * 60 * 60 * 1000;
+    return (this.window || []).filter(m => new Date(m.utcDate).getTime() <= cutoff);
+  }
+
+  /** Load the full MAX_DAYS window from the API. Keeps the old data if it fails. */
+  async refreshWindow() {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = this.fetchWindow()
+      .then(matches => {
+        this.window = matches;
+        this.windowLoadedAt = Date.now();
+      })
+      .catch(err => {
+        logger.error('Window refresh failed, keeping previous data', { message: err.message });
+        if (!this.window) throw err;
+      })
+      .finally(() => {
+        this.refreshing = null;
+      });
+    return this.refreshing;
+  }
+
+  startBackgroundRefresh(intervalMs: number = CACHE_TTL_MS) {
+    this.refreshWindow().catch(() => {});
+    setInterval(() => this.refreshWindow().catch(() => {}), intervalMs);
+  }
+
+  get windowAge() {
+    return this.windowLoadedAt ? Date.now() - this.windowLoadedAt : null;
+  }
+
+  private async fetchWindow() {
+    const today = new Date();
+    const end = new Date(today.getTime() + MAX_DAYS * 24 * 60 * 60 * 1000);
+    const dateFrom = toDateString(today);
+    const dateTo = toDateString(end);
+
+    console.log(`🔄 Fetching matches ${dateFrom} → ${dateTo} from ${this.competitions.length} competitions...`);
+
+    const results = await Promise.allSettled(
+      this.competitions.map(code =>
+        this.client
+          .get(`/competitions/${code}/matches`, { params: { dateFrom, dateTo } })
+          .then(res => ({ code, matches: (res.data.matches || []) as any[] }))
+      )
+    );
+
+    const all: any[] = [];
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        console.log(`  ✅ ${r.value.code}: ${r.value.matches.length} matches`);
+        all.push(...r.value.matches);
+      } else {
+        const err: any = r.reason;
+        const status = err?.response?.status;
+        const msg = err?.response?.data?.message || err?.message;
+        console.log(`  ⚠️  failed: ${status || ''} ${msg}`);
+        logger.warn('Competition fetch failed', { status, msg });
+      }
+    }
+
+    // Keep only upcoming/live, dedupe, sort by kickoff
+    const byId = new Map<number, any>();
+    for (const m of all) {
+      if (ACTIVE_STATUSES.has(m.status)) byId.set(m.id, m);
+    }
+    const matches = Array.from(byId.values()).sort(
+      (a, b) => new Date(a.utcDate).getTime() - new Date(b.utcDate).getTime()
+    );
+
+    console.log(`✅ Total: ${matches.length} upcoming/live matches (next ${MAX_DAYS} days)`);
+    return matches;
+  }
+
+  /** Matches currently in play across all competitions the plan allows. */
+  async getLiveMatches() {
+    const cacheKey = 'live';
+    const cached = this.getCached<any[]>(cacheKey);
+    if (cached) return cached;
+
     try {
-      const response = await this.client.get('/competitions');
-      return response.data.competitions;
-    } catch (error) {
-      logger.error('Error fetching leagues', { error });
+      const response = await this.client.get('/matches', {
+        params: { status: 'IN_PLAY' }
+      });
+      const inPlay: any[] = response.data.matches || [];
+      // The API treats IN_PLAY and PAUSED separately; fetch PAUSED too
+      const pausedRes = await this.client.get('/matches', {
+        params: { status: 'PAUSED' }
+      });
+      const paused: any[] = pausedRes.data.matches || [];
+
+      const live = [...inPlay, ...paused].filter(m => LIVE_STATUSES.has(m.status));
+      this.setCached(cacheKey, live, LIVE_CACHE_TTL_MS);
+      return live;
+    } catch (error: any) {
+      logger.error('Error fetching live matches', { error: error.message });
       throw error;
     }
   }
 
-  async getMatchesByLeague(leagueCode: string) {
-    try {
-      const response = await this.client.get(`/competitions/${leagueCode}/matches`);
-      return response.data.matches;
-    } catch (error) {
-      logger.error(`Error fetching matches for league ${leagueCode}`, { error });
-      throw error;
-    }
+  async getLeagues() {
+    const cached = this.getCached<any[]>('leagues');
+    if (cached) return cached;
+    const response = await this.client.get('/competitions');
+    const leagues = response.data.competitions || [];
+    this.setCached('leagues', leagues, 60 * 60 * 1000);
+    return leagues;
+  }
+
+  async getStandings(leagueCode: string) {
+    const key = `standings:${leagueCode}`;
+    const cached = this.getCached<any>(key);
+    if (cached) return cached;
+    const response = await this.client.get(`/competitions/${leagueCode}/standings`);
+    this.setCached(key, response.data, 30 * 60 * 1000);
+    return response.data;
   }
 
   async getMatch(matchId: number) {
-    try {
-      const response = await this.client.get(`/matches/${matchId}`);
-      return response.data.match;
-    } catch (error) {
-      logger.error(`Error fetching match ${matchId}`, { error });
-      throw error;
-    }
+    const key = `match:${matchId}`;
+    const cached = this.getCached<any>(key);
+    if (cached) return cached;
+    const response = await this.client.get(`/matches/${matchId}`);
+    this.setCached(key, response.data, 60 * 1000);
+    return response.data;
+  }
+
+  async getHeadToHead(matchId: number, limit: number = 10) {
+    const key = `h2h:${matchId}`;
+    const cached = this.getCached<any>(key);
+    if (cached) return cached;
+    const response = await this.client.get(`/matches/${matchId}/head2head`, {
+      params: { limit }
+    });
+    this.setCached(key, response.data, 60 * 60 * 1000);
+    return response.data;
   }
 
   async getTeam(teamId: number) {
-    try {
-      const response = await this.client.get(`/teams/${teamId}`);
-      return response.data.team;
-    } catch (error) {
-      logger.error(`Error fetching team ${teamId}`, { error });
-      throw error;
-    }
+    const key = `team:${teamId}`;
+    const cached = this.getCached<any>(key);
+    if (cached) return cached;
+    const response = await this.client.get(`/teams/${teamId}`);
+    this.setCached(key, response.data, 60 * 60 * 1000);
+    return response.data;
   }
 
-  async getTeamSquad(teamId: number) {
-    try {
-      const response = await this.client.get(`/teams/${teamId}`);
-      return response.data.squad;
-    } catch (error) {
-      logger.error(`Error fetching team squad ${teamId}`, { error });
-      throw error;
+  /** Last `limit` finished matches for a team (most recent first). */
+  async getTeamRecentMatches(teamId: number, limit: number = 5) {
+    const key = `teamform:${teamId}:${limit}`;
+    const cached = this.getCached<any[]>(key);
+    if (cached) return cached;
+
+    const today = new Date();
+    const from = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const response = await this.client.get(`/teams/${teamId}/matches`, {
+      params: { status: 'FINISHED', dateFrom: toDateString(from), dateTo: toDateString(today) }
+    });
+    const matches: any[] = (response.data.matches || [])
+      .sort((a: any, b: any) => new Date(b.utcDate).getTime() - new Date(a.utcDate).getTime())
+      .slice(0, limit);
+    this.setCached(key, matches, 30 * 60 * 1000);
+    return matches;
+  }
+
+  /** Find a team's row in a competition table (TOTAL table, or the group that contains it). */
+  private findStandingRow(standings: any, teamId: number) {
+    const tables: any[] = standings?.standings || [];
+    const total = tables.find(t => t.type === 'TOTAL' && t.table?.some((r: any) => r.team?.id === teamId));
+    const table = total || tables.find(t => t.table?.some((r: any) => r.team?.id === teamId));
+    if (!table) return null;
+    const row = table.table.find((r: any) => r.team?.id === teamId);
+    return row ? { ...row, group: table.group || null, teamsInTable: table.table.length } : null;
+  }
+
+  /**
+   * Everything the match page needs in one call:
+   * match (events, lineups, stats), head-to-head, both teams' standing + recent form.
+   */
+  async getMatchDetails(matchId: number) {
+    const match = await this.getMatch(matchId);
+    if (!match || !match.homeTeam || !match.awayTeam) {
+      throw Object.assign(new Error('Match not found'), { response: { status: 404 } });
     }
+    const homeId = match.homeTeam.id;
+    const awayId = match.awayTeam.id;
+    const code = match.competition?.code;
+
+    const [h2h, standings, homeForm, awayForm] = await Promise.all([
+      this.getHeadToHead(matchId, 10).catch(() => null),
+      code ? this.getStandings(code).catch(() => null) : Promise.resolve(null),
+      this.getTeamRecentMatches(homeId, 5).catch(() => []),
+      this.getTeamRecentMatches(awayId, 5).catch(() => [])
+    ]);
+
+    return {
+      match,
+      head2head: h2h,
+      standings: {
+        home: standings ? this.findStandingRow(standings, homeId) : null,
+        away: standings ? this.findStandingRow(standings, awayId) : null
+      },
+      form: { home: homeForm, away: awayForm }
+    };
   }
 }
 
