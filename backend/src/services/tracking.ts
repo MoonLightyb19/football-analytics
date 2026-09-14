@@ -1,0 +1,347 @@
+/**
+ * Prediction tracking: save every prediction, lock it at kick-off,
+ * settle it against the result, and compute accuracy metrics.
+ */
+import { db } from '../db';
+import logger from '../utils/logger';
+import { Prediction } from './predictionModel';
+
+const LIVE_OR_DONE = new Set(['IN_PLAY', 'PAUSED', 'FINISHED', 'AWARDED']);
+const VOID_STATUSES = new Set(['POSTPONED', 'CANCELLED']);
+const SETTLE_AFTER_MS = 105 * 60 * 1000; // kick-off + 105 min before we look for a result
+const EDGE_THRESHOLD = 0.05; // bet when model EV at market odds >= +5%
+
+export type Outcome = 'H' | 'D' | 'A';
+
+const upsertStmt = db.prepare(`
+  INSERT INTO predictions (
+    match_id, model, competition_code, competition_name, utc_date,
+    home_team_id, home_team, away_team_id, away_team,
+    p_home, p_draw, p_away, xg_home, xg_away, over25, btts, confidence,
+    games_home, games_away, odds_home, odds_draw, odds_away,
+    locked, settled, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+  ON CONFLICT(match_id, model) DO UPDATE SET
+    utc_date = excluded.utc_date,
+    p_home = excluded.p_home, p_draw = excluded.p_draw, p_away = excluded.p_away,
+    xg_home = excluded.xg_home, xg_away = excluded.xg_away,
+    over25 = excluded.over25, btts = excluded.btts, confidence = excluded.confidence,
+    games_home = excluded.games_home, games_away = excluded.games_away,
+    odds_home = COALESCE(excluded.odds_home, predictions.odds_home),
+    odds_draw = COALESCE(excluded.odds_draw, predictions.odds_draw),
+    odds_away = COALESCE(excluded.odds_away, predictions.odds_away),
+    updated_at = excluded.updated_at
+  WHERE predictions.locked = 0
+`);
+
+const lockStmt = db.prepare(
+  `UPDATE predictions SET locked = 1, locked_at = COALESCE(locked_at, ?), updated_at = ? WHERE match_id = ? AND locked = 0`
+);
+
+/** Save/refresh predictions for a batch of matches (with .prediction attached). */
+export function recordPredictions(matches: any[]) {
+  const now = new Date().toISOString();
+  let saved = 0;
+  let locked = 0;
+  for (const m of matches) {
+    const p: Prediction | null = m.prediction;
+    if (!p) continue;
+    const kickedOff = LIVE_OR_DONE.has(m.status) || new Date(m.utcDate).getTime() <= Date.now();
+
+    if (kickedOff) {
+      // Kick-off: freeze whatever was predicted before the match. Never insert
+      // or update after the start — only pre-match predictions count.
+      const l = lockStmt.run(now, now, m.id);
+      if (Number(l.changes) > 0) locked++;
+      continue;
+    }
+
+    const odds = m.odds?.msw || {};
+    const res = upsertStmt.run(
+      m.id,
+      p.model,
+      m.competition?.code || null,
+      m.competition?.name || null,
+      m.utcDate,
+      m.homeTeam?.id || null,
+      m.homeTeam?.shortName || m.homeTeam?.name || null,
+      m.awayTeam?.id || null,
+      m.awayTeam?.shortName || m.awayTeam?.name || null,
+      p.home,
+      p.draw,
+      p.away,
+      p.expectedGoals.home,
+      p.expectedGoals.away,
+      p.over25,
+      p.btts,
+      p.confidence,
+      p.factors.gamesPlayed.home,
+      p.factors.gamesPlayed.away,
+      odds.homeWin ?? null,
+      odds.draw ?? null,
+      odds.awayWin ?? null,
+      now,
+      now
+    );
+    if (Number(res.changes) > 0) saved++;
+  }
+  if (saved || locked) logger.info(`Predictions saved: ${saved}, newly locked: ${locked}`);
+}
+
+const pendingStmt = db.prepare(
+  `SELECT DISTINCT match_id, utc_date FROM predictions WHERE settled = 0 AND utc_date <= ? ORDER BY utc_date`
+);
+const insertResult = db.prepare(
+  `INSERT OR REPLACE INTO results (match_id, status, home_goals, away_goals, outcome, settled_at) VALUES (?, ?, ?, ?, ?, ?)`
+);
+const markSettled = db.prepare(`UPDATE predictions SET settled = 1, locked = 1, updated_at = ? WHERE match_id = ?`);
+
+/**
+ * Settle pending predictions. `fetchRange(dateFrom, dateTo)` must return all
+ * matches (any status) between the two ISO dates (YYYY-MM-DD).
+ */
+export async function settlePending(fetchRange: (dateFrom: string, dateTo: string) => Promise<any[]>) {
+  const cutoff = new Date(Date.now() - SETTLE_AFTER_MS).toISOString();
+  const pending: { match_id: number; utc_date: string }[] = pendingStmt.all(cutoff);
+  if (!pending.length) return { settled: 0, pending: 0 };
+
+  const ids = new Set(pending.map(p => p.match_id));
+  const first = new Date(pending[0].utc_date);
+  const last = new Date(pending[pending.length - 1].utc_date);
+  const day = (d: Date) => d.toISOString().slice(0, 10);
+
+  // Fetch in <=10-day chunks (API limit for the /matches date range)
+  const fetched: any[] = [];
+  let from = new Date(first.getTime() - 24 * 3600 * 1000);
+  const end = new Date(last.getTime() + 24 * 3600 * 1000);
+  while (from <= end) {
+    const to = new Date(Math.min(from.getTime() + 9 * 24 * 3600 * 1000, end.getTime()));
+    try {
+      fetched.push(...(await fetchRange(day(from), day(to))));
+    } catch (error: any) {
+      logger.warn('Settle fetch failed', { from: day(from), to: day(to), message: error.message });
+    }
+    from = new Date(to.getTime() + 24 * 3600 * 1000);
+  }
+
+  const now = new Date().toISOString();
+  let settled = 0;
+  for (const m of fetched) {
+    if (!ids.has(m.id)) continue;
+    if (m.status === 'FINISHED' || m.status === 'AWARDED') {
+      const h = m.score?.fullTime?.home;
+      const a = m.score?.fullTime?.away;
+      if (h === null || h === undefined || a === null || a === undefined) continue;
+      const outcome: Outcome = h > a ? 'H' : h < a ? 'A' : 'D';
+      insertResult.run(m.id, m.status, h, a, outcome, now);
+      markSettled.run(now, m.id);
+      settled++;
+    } else if (VOID_STATUSES.has(m.status)) {
+      insertResult.run(m.id, m.status, null, null, 'VOID', now);
+      markSettled.run(now, m.id);
+      settled++;
+    }
+  }
+  if (settled) logger.info(`Settled ${settled} predictions (${pending.length - settled} still pending)`);
+  return { settled, pending: pending.length - settled };
+}
+
+/* ---------------- metrics ---------------- */
+
+interface SettledRow {
+  match_id: number;
+  model: string;
+  competition_code: string | null;
+  competition_name: string | null;
+  utc_date: string;
+  home_team: string;
+  away_team: string;
+  p_home: number;
+  p_draw: number;
+  p_away: number;
+  confidence: string | null;
+  odds_home: number | null;
+  odds_draw: number | null;
+  odds_away: number | null;
+  home_goals: number;
+  away_goals: number;
+  outcome: Outcome;
+}
+
+function settledRows(days: number, competition?: string): SettledRow[] {
+  const since = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+  const sql = `
+    SELECT p.match_id, p.model, p.competition_code, p.competition_name, p.utc_date,
+           p.home_team, p.away_team, p.p_home, p.p_draw, p.p_away, p.confidence,
+           p.odds_home, p.odds_draw, p.odds_away,
+           r.home_goals, r.away_goals, r.outcome
+    FROM predictions p JOIN results r ON r.match_id = p.match_id
+    WHERE p.settled = 1 AND r.outcome IN ('H','D','A') AND p.utc_date >= ?
+      ${competition ? 'AND p.competition_code = ?' : ''}
+    ORDER BY p.utc_date DESC`;
+  return competition ? db.prepare(sql).all(since, competition) : db.prepare(sql).all(since);
+}
+
+function pick(r: { p_home: number; p_draw: number; p_away: number }): Outcome {
+  if (r.p_home >= r.p_draw && r.p_home >= r.p_away) return 'H';
+  if (r.p_away >= r.p_draw) return 'A';
+  return 'D';
+}
+
+function probOf(r: { p_home: number; p_draw: number; p_away: number }, o: Outcome) {
+  return (o === 'H' ? r.p_home : o === 'D' ? r.p_draw : r.p_away) / 100;
+}
+
+function oddsOf(r: SettledRow, o: Outcome) {
+  return o === 'H' ? r.odds_home : o === 'D' ? r.odds_draw : r.odds_away;
+}
+
+/** Bookmaker implied probabilities with the overround removed. */
+function marketProbs(r: SettledRow): Record<Outcome, number> | null {
+  if (!r.odds_home || !r.odds_draw || !r.odds_away) return null;
+  const inv = { H: 1 / r.odds_home, D: 1 / r.odds_draw, A: 1 / r.odds_away };
+  const sum = inv.H + inv.D + inv.A;
+  return { H: inv.H / sum, D: inv.D / sum, A: inv.A / sum };
+}
+
+function brier(p: Record<Outcome, number>, actual: Outcome) {
+  return (['H', 'D', 'A'] as Outcome[]).reduce((s, o) => s + Math.pow(p[o] - (o === actual ? 1 : 0), 2), 0);
+}
+
+const r3 = (x: number) => Math.round(x * 1000) / 1000;
+const pct = (x: number) => Math.round(x * 1000) / 10;
+
+export function accuracy(days: number = 90, competition?: string) {
+  const rows = settledRows(days, competition);
+  const n = rows.length;
+
+  let hits = 0;
+  let brierSum = 0;
+  let logLossSum = 0;
+  let mHits = 0;
+  let mBrier = 0;
+  let mLogLoss = 0;
+  let mN = 0;
+  const outcomes = { H: 0, D: 0, A: 0 };
+  const picks = { H: 0, D: 0, A: 0 };
+  const bins = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.01].map((hi, i, arr) => ({
+    from: i === 0 ? 0 : arr[i - 1],
+    to: hi,
+    n: 0,
+    hits: 0,
+    predSum: 0
+  }));
+  // Betting strategies at market odds (flat 1-unit stakes)
+  const edgeBets = { bets: 0, wins: 0, profit: 0 };
+  const favBets = { bets: 0, wins: 0, profit: 0 };
+  const byComp = new Map<string, { name: string; n: number; hits: number; brier: number }>();
+
+  for (const r of rows) {
+    const p = { H: r.p_home / 100, D: r.p_draw / 100, A: r.p_away / 100 };
+    const pk = pick(r);
+    const hit = pk === r.outcome;
+    hits += hit ? 1 : 0;
+    brierSum += brier(p, r.outcome);
+    logLossSum += -Math.log(Math.max(1e-6, probOf(r, r.outcome)));
+    outcomes[r.outcome]++;
+    picks[pk]++;
+
+    const bin = bins.find(b => p[pk] >= b.from && p[pk] < b.to);
+    if (bin) {
+      bin.n++;
+      bin.hits += hit ? 1 : 0;
+      bin.predSum += p[pk];
+    }
+
+    const key = r.competition_code || '?';
+    const c = byComp.get(key) || { name: r.competition_name || key, n: 0, hits: 0, brier: 0 };
+    c.n++;
+    c.hits += hit ? 1 : 0;
+    c.brier += brier(p, r.outcome);
+    byComp.set(key, c);
+
+    const mp = marketProbs(r);
+    if (mp) {
+      mN++;
+      const mPick = (['H', 'D', 'A'] as Outcome[]).reduce((b, o) => (mp[o] > mp[b] ? o : b), 'H' as Outcome);
+      mHits += mPick === r.outcome ? 1 : 0;
+      mBrier += brier(mp, r.outcome);
+      mLogLoss += -Math.log(Math.max(1e-6, mp[r.outcome]));
+
+      // Edge strategy: bet any outcome whose EV at market odds >= threshold
+      for (const o of ['H', 'D', 'A'] as Outcome[]) {
+        const odds = oddsOf(r, o)!;
+        if (p[o] * odds - 1 >= EDGE_THRESHOLD) {
+          edgeBets.bets++;
+          if (o === r.outcome) {
+            edgeBets.wins++;
+            edgeBets.profit += odds - 1;
+          } else edgeBets.profit -= 1;
+        }
+      }
+      // Favourite strategy: always bet the model's pick
+      const fo = oddsOf(r, pk)!;
+      favBets.bets++;
+      if (hit) {
+        favBets.wins++;
+        favBets.profit += fo - 1;
+      } else favBets.profit -= 1;
+    }
+  }
+
+  return {
+    days,
+    competition: competition || null,
+    settled: n,
+    pending: (db.prepare(`SELECT COUNT(*) AS c FROM predictions WHERE settled = 0`).get() as any).c,
+    model: n
+      ? { hitRate: pct(hits / n), brier: r3(brierSum / n), logLoss: r3(logLossSum / n) }
+      : null,
+    market: mN
+      ? { n: mN, hitRate: pct(mHits / mN), brier: r3(mBrier / mN), logLoss: r3(mLogLoss / mN) }
+      : null,
+    betting: mN
+      ? {
+          edgeThreshold: EDGE_THRESHOLD,
+          edge: { ...edgeBets, profit: r3(edgeBets.profit), roi: edgeBets.bets ? pct(edgeBets.profit / edgeBets.bets) : 0 },
+          favourite: { ...favBets, profit: r3(favBets.profit), roi: favBets.bets ? pct(favBets.profit / favBets.bets) : 0 }
+        }
+      : null,
+    outcomes,
+    picks,
+    calibration: bins
+      .filter(b => b.n > 0)
+      .map(b => ({ range: `${Math.round(b.from * 100)}–${Math.min(100, Math.round(b.to * 100))}%`, n: b.n, predicted: pct(b.predSum / b.n), actual: pct(b.hits / b.n) })),
+    byCompetition: Array.from(byComp.entries())
+      .map(([code, c]) => ({ code, name: c.name, n: c.n, hitRate: pct(c.hits / c.n), brier: r3(c.brier / c.n) }))
+      .sort((a, b) => b.n - a.n)
+  };
+}
+
+export function recentSettled(days: number = 90, competition?: string, limit: number = 100) {
+  return settledRows(days, competition)
+    .slice(0, limit)
+    .map(r => ({
+      matchId: r.match_id,
+      date: r.utc_date,
+      competition: r.competition_name,
+      code: r.competition_code,
+      home: r.home_team,
+      away: r.away_team,
+      score: `${r.home_goals}–${r.away_goals}`,
+      outcome: r.outcome,
+      pick: pick(r),
+      hit: pick(r) === r.outcome,
+      p: { H: r.p_home, D: r.p_draw, A: r.p_away },
+      odds: r.odds_home ? { H: r.odds_home, D: r.odds_draw, A: r.odds_away } : null,
+      confidence: r.confidence
+    }));
+}
+
+export function trackingStatus() {
+  const total = (db.prepare(`SELECT COUNT(*) AS c FROM predictions`).get() as any).c;
+  const locked = (db.prepare(`SELECT COUNT(*) AS c FROM predictions WHERE locked = 1 AND settled = 0`).get() as any).c;
+  const settled = (db.prepare(`SELECT COUNT(*) AS c FROM predictions WHERE settled = 1`).get() as any).c;
+  const withOdds = (db.prepare(`SELECT COUNT(*) AS c FROM predictions WHERE odds_home IS NOT NULL`).get() as any).c;
+  return { total, open: total - locked - settled, locked, settled, withOdds };
+}

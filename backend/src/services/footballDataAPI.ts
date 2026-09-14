@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import logger from '../utils/logger';
+import { predictFromStandings, Prediction, StandingsResponse } from './predictionModel';
 
 // Competitions to load. Override with COMPETITIONS=PL,PD,... in .env
 const DEFAULT_COMPETITIONS = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'DED', 'PPL', 'ELC'];
@@ -30,6 +31,10 @@ class FootballDataAPI {
   private window: any[] | null = null;
   private windowLoadedAt: number | null = null;
   private refreshing: Promise<void> | null = null;
+  // Latest known standings per competition (kept even if a refresh fails)
+  private standingsByCode = new Map<string, StandingsResponse>();
+  /** Called after every successful window refresh with predictions attached. */
+  onWindowRefreshed: ((matches: any[]) => void) | null = null;
 
   constructor() {
     this.baseURL = process.env.FOOTBALL_DATA_BASE_URL || 'https://api.football-data.org/v4';
@@ -84,9 +89,17 @@ class FootballDataAPI {
   async refreshWindow() {
     if (this.refreshing) return this.refreshing;
     this.refreshing = this.fetchWindow()
-      .then(matches => {
+      .then(async matches => {
         this.window = matches;
         this.windowLoadedAt = Date.now();
+        await this.refreshStandings();
+        if (this.onWindowRefreshed) {
+          try {
+            this.onWindowRefreshed(this.withPredictions(matches));
+          } catch (error: any) {
+            logger.error('onWindowRefreshed failed', { message: error.message });
+          }
+        }
       })
       .catch(err => {
         logger.error('Window refresh failed, keeping previous data', { message: err.message });
@@ -105,6 +118,39 @@ class FootballDataAPI {
 
   get windowAge() {
     return this.windowLoadedAt ? Date.now() - this.windowLoadedAt : null;
+  }
+
+  /** Load/refresh standings for every competition in the window (cached 30 min). */
+  private async refreshStandings() {
+    const codes = Array.from(new Set((this.window || []).map(m => m.competition?.code).filter(Boolean)));
+    const results = await Promise.allSettled(codes.map(code => this.getStandings(code)));
+    let ok = 0;
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value) {
+        this.standingsByCode.set(codes[i], r.value);
+        ok++;
+      } else {
+        const err: any = (r as PromiseRejectedResult).reason;
+        console.log(`  ⚠️  standings ${codes[i]}: ${err?.response?.status || ''} ${err?.message || ''}`);
+      }
+    });
+    console.log(`📊 Standings loaded for ${ok}/${codes.length} competitions`);
+  }
+
+  /** Model prediction for a match, from the latest standings of its competition. */
+  predictionFor(match: any): Prediction | null {
+    if (!match?.homeTeam?.id || !match?.awayTeam?.id) return null;
+    const standings = this.standingsByCode.get(match.competition?.code) || null;
+    try {
+      return predictFromStandings(standings, match.homeTeam.id, match.awayTeam.id);
+    } catch (error: any) {
+      logger.warn('Prediction failed', { matchId: match.id, message: error.message });
+      return null;
+    }
+  }
+
+  withPredictions<T extends { id: number }>(matches: T[]): (T & { prediction: Prediction | null })[] {
+    return matches.map(m => ({ ...m, prediction: this.predictionFor(m) }));
   }
 
   private async fetchWindow() {
@@ -148,6 +194,12 @@ class FootballDataAPI {
 
     console.log(`✅ Total: ${matches.length} upcoming/live matches (next ${MAX_DAYS} days)`);
     return matches;
+  }
+
+  /** All matches (any status) between two dates, across the plan's competitions. Max 10 days. */
+  async getMatchesInRange(dateFrom: string, dateTo: string) {
+    const response = await this.client.get('/matches', { params: { dateFrom, dateTo } });
+    return (response.data.matches || []) as any[];
   }
 
   /** Matches currently in play across all competitions the plan allows. */
@@ -271,8 +323,11 @@ class FootballDataAPI {
       this.getTeamRecentMatches(awayId, 5).catch(() => [])
     ]);
 
+    if (standings && code) this.standingsByCode.set(code, standings);
+
     return {
       match,
+      prediction: this.predictionFor(match),
       head2head: h2h,
       standings: {
         home: standings ? this.findStandingRow(standings, homeId) : null,

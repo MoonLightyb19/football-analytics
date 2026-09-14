@@ -18,6 +18,7 @@ if (envResult.error) {
 
 // Import after env is loaded
 import footballDataAPI from './services/footballDataAPI';
+import { recordPredictions, settlePending, accuracy, recentSettled, trackingStatus } from './services/tracking';
 
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 
@@ -66,7 +67,7 @@ app.get('/api/health', (_req, res) => {
 app.get('/api/matches/upcoming', async (req, res) => {
   try {
     const days = parseInt(String(req.query.days || '30'), 10) || 30;
-    const matches = await footballDataAPI.getUpcomingMatches(days);
+    const matches = footballDataAPI.withPredictions(await footballDataAPI.getUpcomingMatches(days));
     res.json({
       data: matches,
       count: matches.length,
@@ -81,7 +82,7 @@ app.get('/api/matches/upcoming', async (req, res) => {
 
 app.get('/api/matches/live', async (_req, res) => {
   try {
-    const matches = await footballDataAPI.getLiveMatches();
+    const matches = footballDataAPI.withPredictions(await footballDataAPI.getLiveMatches());
     res.json({ data: matches, count: matches.length, timestamp: new Date().toISOString() });
   } catch (error: any) {
     sendError(res, error, 'Failed to fetch live matches');
@@ -146,6 +147,47 @@ app.get('/api/teams/:id(\\d+)', async (req, res) => {
   }
 });
 
+// ---------- Prediction tracking / accuracy ----------
+
+app.get('/api/accuracy', (req, res) => {
+  try {
+    const days = parseInt(String(req.query.days || '90'), 10) || 90;
+    const competition = req.query.competition ? String(req.query.competition).toUpperCase() : undefined;
+    res.json({ data: accuracy(days, competition), timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Failed to compute accuracy');
+  }
+});
+
+app.get('/api/accuracy/recent', (req, res) => {
+  try {
+    const days = parseInt(String(req.query.days || '90'), 10) || 90;
+    const competition = req.query.competition ? String(req.query.competition).toUpperCase() : undefined;
+    const limit = parseInt(String(req.query.limit || '100'), 10) || 100;
+    res.json({ data: recentSettled(days, competition, limit), timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Failed to list settled predictions');
+  }
+});
+
+app.get('/api/accuracy/status', (_req, res) => {
+  try {
+    res.json({ data: trackingStatus(), timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Failed to read tracking status');
+  }
+});
+
+// Manually trigger settlement (handy for testing)
+app.post('/api/accuracy/settle', async (_req, res) => {
+  try {
+    const result = await settlePending((from, to) => footballDataAPI.getMatchesInRange(from, to));
+    res.json({ data: result, timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Settlement failed');
+  }
+});
+
 // ---------- WebSocket ----------
 
 io.on('connection', socket => {
@@ -169,9 +211,9 @@ app.set('io', io);
 // Push live scores to all clients every 60s (only when someone is connected)
 const LIVE_POLL_MS = parseInt(process.env.LIVE_POLL_MS || '60000', 10);
 setInterval(async () => {
-  if (io.engine.clientsCount === 0) return;
   try {
-    const live = await footballDataAPI.getLiveMatches();
+    const live = footballDataAPI.withPredictions(await footballDataAPI.getLiveMatches());
+    recordPredictions(live); // locks anything that has kicked off
     io.emit('matches:live', { data: live, timestamp: new Date().toISOString() });
     // Per-match rooms get their own update (score / status / minute)
     for (const m of live) {
@@ -197,8 +239,17 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   logger.info(`Server running on http://localhost:${PORT}`);
   logger.info(`WebSocket server ready (CORS: ${isDev ? 'any origin [dev]' : allowedOrigins.join(', ')})`);
+  // Save/refresh predictions every time the fixture window is refreshed
+  footballDataAPI.onWindowRefreshed = matches => recordPredictions(matches);
   // Warm the fixture window now and keep it fresh in the background
   footballDataAPI.startBackgroundRefresh();
+  // Settle finished matches every 10 minutes (first run after 1 minute)
+  const settle = () =>
+    settlePending((from, to) => footballDataAPI.getMatchesInRange(from, to)).catch(err =>
+      logger.warn('Settle job failed', { message: err.message })
+    );
+  setTimeout(settle, 60 * 1000);
+  setInterval(settle, parseInt(process.env.SETTLE_INTERVAL_MS || '600000', 10));
 });
 
 export { app, io };

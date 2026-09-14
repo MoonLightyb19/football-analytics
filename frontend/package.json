@@ -1,7 +1,7 @@
 {
-  "name": "football-analytics-frontend",
+  "name": "bet-to-beat-frontend",
   "version": "1.0.0",
-  "description": "Football analytics and prediction platform - Frontend",
+  "description": "Bet To Beat - football prediction platform (web)",
   "private": true,
   "type": "module",
   "scripts": {

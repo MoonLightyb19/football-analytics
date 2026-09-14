@@ -1,20 +1,35 @@
+// Prediction shape served by the backend (see backend/src/services/predictionModel.ts)
 export interface Prediction {
-  home: number
-  draw: number
-  away: number
+  model: string
+  home: number // %
+  draw: number // %
+  away: number // %
+  expectedGoals: { home: number; away: number }
+  over25: number // %
+  btts: number // %
+  topScores: { home: number; away: number; prob: number }[]
+  confidence: 'low' | 'medium' | 'high'
+  factors: {
+    homeAttack: number
+    homeDefence: number
+    awayAttack: number
+    awayDefence: number
+    homeAdvantage: number
+    homeForm: number
+    awayForm: number
+    gamesPlayed: { home: number; away: number }
+    leagueAvgGoals: number
+  }
 }
 
-// Placeholder model – deterministic so the numbers don't jump on refresh.
-// Will be replaced with the real statistical model served by the backend.
-export function predict(match: {
-  id: number
-  homeTeam: { name: string }
-  awayTeam: { name: string }
-}): Prediction {
-  const seed = match.id + match.homeTeam.name.length + match.awayTeam.name.length
-  const r = Math.sin(seed) * 10000
-  const rand = r - Math.floor(r)
-  const home = Math.round(40 + rand * 30)
-  const draw = Math.round(20 + (1 - rand) * 15)
-  return { home, draw, away: 100 - home - draw }
+/** Fair (no-margin) decimal odds implied by a probability in %. */
+export function fairOdds(pct: number) {
+  if (!pct || pct <= 0) return '–'
+  return (100 / pct).toFixed(2)
+}
+
+export const CONFIDENCE_LABEL: Record<Prediction['confidence'], string> = {
+  low: 'Low confidence · few games played',
+  medium: 'Medium confidence',
+  high: 'High confidence'
 }

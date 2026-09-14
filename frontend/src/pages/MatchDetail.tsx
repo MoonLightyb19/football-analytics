@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import axios from 'axios'
 import { API_URL, socket } from '../lib/socket'
-import { predict } from '../lib/predict'
+import { fairOdds, CONFIDENCE_LABEL, type Prediction } from '../lib/predict'
 
 /* ---------- types (Football-Data.org v4 shapes, loosely) ---------- */
 
@@ -93,6 +93,7 @@ interface StandingRow {
 
 interface Details {
   match: Match
+  prediction: Prediction | null
   head2head: {
     aggregates: {
       numberOfMatches: number
@@ -253,7 +254,7 @@ function MatchDetail() {
   const live = LIVE.has(m.status)
   const done = DONE.has(m.status)
   const showScore = live || done
-  const p = predict(m)
+  const p = details.prediction
   const ft = m.score.fullTime
   const ht = m.score.halfTime
   const referee = (m.referees || []).find(r => !r.type || r.type === 'REFEREE') || (m.referees || [])[0]
@@ -316,17 +317,74 @@ function MatchDetail() {
       </div>
 
       {/* Prediction */}
-      <Section title="Prediction" note="placeholder model — statistical model coming next">
-        <div className="flex h-3 rounded-full overflow-hidden bg-gray-100">
-          <div className="bg-blue-500" style={{ width: `${p.home}%` }} />
-          <div className="bg-yellow-400" style={{ width: `${p.draw}%` }} />
-          <div className="bg-red-500" style={{ width: `${p.away}%` }} />
-        </div>
-        <div className="grid grid-cols-3 mt-3 text-center">
-          <div><div className="text-2xl font-bold text-blue-600">{p.home}%</div><div className="text-xs text-gray-500">{home.shortName || home.name}</div></div>
-          <div><div className="text-2xl font-bold text-yellow-600">{p.draw}%</div><div className="text-xs text-gray-500">Draw</div></div>
-          <div><div className="text-2xl font-bold text-red-600">{p.away}%</div><div className="text-xs text-gray-500">{away.shortName || away.name}</div></div>
-        </div>
+      <Section
+        title="Prediction"
+        note={p ? `Poisson model · ${CONFIDENCE_LABEL[p.confidence]}` : undefined}
+      >
+        {p ? (
+          <>
+            <div className="flex h-3 rounded-full overflow-hidden bg-gray-100">
+              <div className="bg-blue-500" style={{ width: `${p.home}%` }} />
+              <div className="bg-yellow-400" style={{ width: `${p.draw}%` }} />
+              <div className="bg-red-500" style={{ width: `${p.away}%` }} />
+            </div>
+            <div className="grid grid-cols-3 mt-3 text-center">
+              <div>
+                <div className="text-2xl font-bold text-blue-600">{p.home.toFixed(1)}%</div>
+                <div className="text-xs text-gray-500">{home.shortName || home.name}</div>
+                <div className="text-[11px] text-gray-400">fair odds {fairOdds(p.home)}</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-yellow-600">{p.draw.toFixed(1)}%</div>
+                <div className="text-xs text-gray-500">Draw</div>
+                <div className="text-[11px] text-gray-400">fair odds {fairOdds(p.draw)}</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-red-600">{p.away.toFixed(1)}%</div>
+                <div className="text-xs text-gray-500">{away.shortName || away.name}</div>
+                <div className="text-[11px] text-gray-400">fair odds {fairOdds(p.away)}</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-5 text-center">
+              <Stat label="Expected goals" value={`${p.expectedGoals.home} – ${p.expectedGoals.away}`} />
+              <Stat label="Over 2.5" value={`${Math.round(p.over25)}%`} />
+              <Stat label="Both teams score" value={`${Math.round(p.btts)}%`} />
+              <Stat
+                label="Most likely score"
+                value={p.topScores[0] ? `${p.topScores[0].home}–${p.topScores[0].away} (${Math.round(p.topScores[0].prob)}%)` : '–'}
+              />
+            </div>
+
+            <details className="mt-4 text-xs text-gray-500">
+              <summary className="cursor-pointer hover:text-gray-700">How this was calculated</summary>
+              <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1">
+                <span>{home.shortName || home.name} attack / defence</span>
+                <span className="tabular-nums">{p.factors.homeAttack} / {p.factors.homeDefence}</span>
+                <span>{away.shortName || away.name} attack / defence</span>
+                <span className="tabular-nums">{p.factors.awayAttack} / {p.factors.awayDefence}</span>
+                <span>Home advantage</span>
+                <span className="tabular-nums">×{p.factors.homeAdvantage}</span>
+                <span>Form adjustment (home / away)</span>
+                <span className="tabular-nums">×{p.factors.homeForm} / ×{p.factors.awayForm}</span>
+                <span>Games played this season</span>
+                <span className="tabular-nums">{p.factors.gamesPlayed.home} / {p.factors.gamesPlayed.away}</span>
+                <span>League average goals per team</span>
+                <span className="tabular-nums">{p.factors.leagueAvgGoals}</span>
+                <span>Other likely scores</span>
+                <span className="tabular-nums">
+                  {p.topScores.slice(1).map(s => `${s.home}–${s.away} (${Math.round(s.prob)}%)`).join(' · ')}
+                </span>
+              </div>
+              <p className="mt-2 text-gray-400">
+                Strength = goals per game vs the league average, shrunk toward average early in the season (1.00 = average).
+                Attack above 1 is good; defence below 1 is good.
+              </p>
+            </details>
+          </>
+        ) : (
+          <p className="text-sm text-gray-400">No prediction available for this match yet.</p>
+        )}
       </Section>
 
       {/* Events */}

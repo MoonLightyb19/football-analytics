@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import axios from 'axios'
 import { API_URL, socket } from '../lib/socket'
-import { predict } from '../lib/predict'
+import type { Prediction } from '../lib/predict'
 
 interface Team {
   id: number
@@ -33,6 +33,7 @@ interface APIMatch {
     fullTime?: { home: number | null; away: number | null }
     halfTime?: { home: number | null; away: number | null }
   }
+  prediction?: Prediction | null
 }
 
 const LIVE = new Set(['IN_PLAY', 'PAUSED'])
@@ -241,7 +242,7 @@ function TeamRow({ team, score, bold }: { team: Team; score?: number | null; bol
 
 function MatchCard({ match }: { match: APIMatch }) {
   const isLive = LIVE.has(match.status)
-  const p = predict(match)
+  const p = match.prediction
   const ft = match.score?.fullTime
 
   return (
@@ -273,18 +274,29 @@ function MatchCard({ match }: { match: APIMatch }) {
       </div>
 
       {/* Prediction bar */}
-      <div>
-        <div className="flex h-2 rounded-full overflow-hidden bg-gray-100">
-          <div className="bg-blue-500" style={{ width: `${p.home}%` }} />
-          <div className="bg-yellow-400" style={{ width: `${p.draw}%` }} />
-          <div className="bg-red-500" style={{ width: `${p.away}%` }} />
+      {p ? (
+        <div>
+          <div className="flex h-2 rounded-full overflow-hidden bg-gray-100">
+            <div className="bg-blue-500" style={{ width: `${p.home}%` }} />
+            <div className="bg-yellow-400" style={{ width: `${p.draw}%` }} />
+            <div className="bg-red-500" style={{ width: `${p.away}%` }} />
+          </div>
+          <div className="flex justify-between text-xs mt-1.5 tabular-nums">
+            <span className="text-blue-600 font-medium">1 · {Math.round(p.home)}%</span>
+            <span className="text-yellow-600 font-medium">X · {Math.round(p.draw)}%</span>
+            <span className="text-red-600 font-medium">2 · {Math.round(p.away)}%</span>
+          </div>
+          <div className="flex justify-between text-[11px] text-gray-400 mt-1 tabular-nums">
+            <span>xG {p.expectedGoals.home} – {p.expectedGoals.away}</span>
+            <span>O2.5 {Math.round(p.over25)}%</span>
+            <span className={p.confidence === 'low' ? 'text-amber-500' : ''}>
+              {p.confidence === 'low' ? 'low conf.' : p.confidence === 'high' ? 'high conf.' : 'med conf.'}
+            </span>
+          </div>
         </div>
-        <div className="flex justify-between text-xs mt-1.5 tabular-nums">
-          <span className="text-blue-600 font-medium">1 · {p.home}%</span>
-          <span className="text-yellow-600 font-medium">X · {p.draw}%</span>
-          <span className="text-red-600 font-medium">2 · {p.away}%</span>
-        </div>
-      </div>
+      ) : (
+        <div className="text-xs text-gray-400">No prediction available</div>
+      )}
     </Link>
   )
 }

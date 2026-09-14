@@ -1,7 +1,7 @@
 {
-  "name": "football-analytics-backend",
+  "name": "bet-to-beat-backend",
   "version": "1.0.0",
-  "description": "Football analytics and prediction platform - Backend API",
+  "description": "Bet To Beat - football prediction platform (API)",
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn src/index.ts",
@@ -11,7 +11,12 @@
     "lint": "eslint src/**/*.ts",
     "migrate": "ts-node src/database/migrations.ts"
   },
-  "keywords": ["football", "analytics", "prediction", "sports"],
+  "keywords": [
+    "football",
+    "analytics",
+    "prediction",
+    "sports"
+  ],
   "author": "Yarin Boker",
   "license": "MIT",
   "dependencies": {

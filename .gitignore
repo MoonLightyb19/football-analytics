@@ -44,3 +44,6 @@ coverage/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local SQLite database
+backend/data/
