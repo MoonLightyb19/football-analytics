@@ -610,6 +610,7 @@ class FootballDataAPI {
     return {
       match,
       prediction: this.predictionFor(match),
+      predictions: this.allPredictionsFor(match), // every model, so the page can switch between them
       head2head: h2h,
       standings: {
         home: standings ? this.findStandingRow(standings, homeId) : null,

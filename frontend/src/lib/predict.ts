@@ -53,3 +53,13 @@ export const BOOK_LABEL: Record<string, string> = {
 export function bookLabel(m: Market) {
   return BOOK_LABEL[m.bookmaker] || m.bookmaker.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 }
+
+/** Short and long labels for each model id. */
+export const MODEL_INFO: Record<string, { tag: string; name: string; desc: string }> = {
+  'poisson-dc-v1': { tag: 'v1', name: 'Standings model', desc: 'Poisson from the current league table' },
+  'dc-history-v2': { tag: 'v2', name: 'History model', desc: 'Dixon-Coles fitted on 3 seasons of results' }
+}
+
+export function modelInfo(model: string) {
+  return MODEL_INFO[model] || { tag: model, name: model, desc: '' }
+}

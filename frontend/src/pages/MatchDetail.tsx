@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import axios from 'axios'
 import { API_URL, socket } from '../lib/socket'
-import { fairOdds, bookLabel, CONFIDENCE_LABEL, type Market, type Prediction } from '../lib/predict'
+import { fairOdds, bookLabel, modelInfo, CONFIDENCE_LABEL, type Market, type Prediction } from '../lib/predict'
 
 /* ---------- types (Football-Data.org v4 shapes, loosely) ---------- */
 
@@ -95,6 +95,7 @@ interface StandingRow {
 interface Details {
   match: Match
   prediction: Prediction | null
+  predictions?: Prediction[]
   head2head: {
     aggregates: {
       numberOfMatches: number
@@ -235,6 +236,9 @@ function MatchDetail() {
     }
   }, [matchId, isLive, isDone, hasOfficialLineups, Math.floor((kickoff - Date.now()) / (30 * 60 * 1000))])
 
+  // Which model the Prediction section shows (default: the one the backend prefers, v2 when available)
+  const [modelId, setModelId] = useState<string | null>(null)
+
   // Probable lineups are built server-side from recent matches; if they weren't ready in time
   // for the first response (API quota), try again a few times shortly after.
   const [probableRetries, setProbableRetries] = useState(0)
@@ -299,7 +303,8 @@ function MatchDetail() {
   const live = LIVE.has(m.status)
   const done = DONE.has(m.status)
   const showScore = live || done
-  const p = details.prediction
+  const models = details.predictions && details.predictions.length ? details.predictions : details.prediction ? [details.prediction] : []
+  const p = (modelId && models.find(m => m.model === modelId)) || details.prediction || models[0] || null
   const ft = m.score.fullTime
   const ht = m.score.halfTime
   const referee = (m.referees || []).find(r => !r.type || r.type === 'REFEREE') || (m.referees || [])[0]
@@ -390,10 +395,31 @@ function MatchDetail() {
           {/* Prediction */}
           <Section
             title="Prediction"
-            note={p ? `${p.model === 'dc-history-v2' ? 'History model · Dixon-Coles, 3 seasons' : 'Standings model'} · ${CONFIDENCE_LABEL[p.confidence]}` : undefined}
+            note={p ? `${modelInfo(p.model).tag} · ${modelInfo(p.model).name} · ${CONFIDENCE_LABEL[p.confidence]}` : undefined}
           >
             {p && pick ? (
               <>
+                {models.length > 1 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                    <div className="seg">
+                      {models.map(m => {
+                        const info = modelInfo(m.model)
+                        return (
+                          <button
+                            key={m.model}
+                            onClick={() => setModelId(m.model)}
+                            className={`seg-btn flex items-center gap-1.5 ${p.model === m.model ? 'seg-btn-active' : ''}`}
+                            title={info.desc}
+                          >
+                            <span className="font-bold">{info.tag}</span>
+                            <span className="hidden sm:inline">{info.name}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <span className="text-[11px] text-faint">{modelInfo(p.model).desc}</span>
+                  </div>
+                )}
                 <div className="grid grid-cols-3 gap-3">
                   <OutcomeTile k="H" label={home.shortName || home.name} v={p.home} active={pick === 'H'} />
                   <OutcomeTile k="D" label="Draw" v={p.draw} active={pick === 'D'} />
