@@ -239,7 +239,8 @@ function brier(p: Record<Outcome, number>, actual: Outcome) {
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 const pct = (x: number) => Math.round(x * 1000) / 10;
 
-export function computeMetrics(rows: MetricRow[]) {
+export function computeMetrics(rows: MetricRow[], opts: { edgeThreshold?: number } = {}) {
+  const EDGE = opts.edgeThreshold ?? EDGE_THRESHOLD;
   const n = rows.length;
   let hits = 0;
   let brierSum = 0;
@@ -297,7 +298,7 @@ export function computeMetrics(rows: MetricRow[]) {
 
       for (const o of ['H', 'D', 'A'] as Outcome[]) {
         const odds = oddsOf(r, o)!;
-        if (p[o] * odds - 1 >= EDGE_THRESHOLD) {
+        if (p[o] * odds - 1 >= EDGE) {
           edgeBets.bets++;
           g.bets++;
           if (o === r.outcome) {
@@ -326,7 +327,7 @@ export function computeMetrics(rows: MetricRow[]) {
     market: mN ? { n: mN, hitRate: pct(mHits / mN), brier: r3(mBrier / mN), logLoss: r3(mLogLoss / mN) } : null,
     betting: mN
       ? {
-          edgeThreshold: EDGE_THRESHOLD,
+          edgeThreshold: EDGE,
           edge: { ...edgeBets, profit: r3(edgeBets.profit), roi: edgeBets.bets ? pct(edgeBets.profit / edgeBets.bets) : 0 },
           favourite: { ...favBets, profit: r3(favBets.profit), roi: favBets.bets ? pct(favBets.profit / favBets.bets) : 0 }
         }

@@ -140,6 +140,16 @@ app.get('/api/leagues/:code/standings', async (req, res) => {
   }
 });
 
+app.get('/api/leagues/:code/scorers', async (req, res) => {
+  try {
+    const limit = parseInt(String(req.query.limit || '40'), 10) || 40;
+    const scorers = await footballDataAPI.getScorers(req.params.code.toUpperCase(), limit);
+    res.json({ data: scorers, timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Failed to fetch scorers');
+  }
+});
+
 app.get('/api/teams/:id(\\d+)', async (req, res) => {
   try {
     const team = await footballDataAPI.getTeam(parseInt(req.params.id, 10));
@@ -243,25 +253,30 @@ app.get('/api/backtest', (req, res) => {
     const season = String(req.query.season || '2425');
     const group = req.query.group ? String(req.query.group).toUpperCase() : undefined;
     const minEvidence = parseFloat(String(req.query.minEvidence || '0')) || 0;
+    const oddsKind = String(req.query.odds || 'close') === 'early' ? 'early' : 'close';
+    const edge = parseFloat(String(req.query.edge || '0.05')) || 0.05;
     const rows = backtestRows(season, group, minEvidence);
     const metrics = computeMetrics(
       rows.map(r => ({
         p_home: r.p_home,
         p_draw: r.p_draw,
         p_away: r.p_away,
-        odds_home: r.odds_home,
-        odds_draw: r.odds_draw,
-        odds_away: r.odds_away,
+        odds_home: oddsKind === 'early' ? r.early_h : r.odds_home,
+        odds_draw: oddsKind === 'early' ? r.early_d : r.odds_draw,
+        odds_away: oddsKind === 'early' ? r.early_a : r.odds_away,
         outcome: r.outcome,
         groupKey: r.division,
         groupName: r.division
-      }))
+      })),
+      { edgeThreshold: edge }
     );
     res.json({
       data: {
         season,
         group: group || null,
         minEvidence,
+        odds: oddsKind,
+        edge,
         runs: backtestRunsList(),
         progress: backtestProgress(),
         ...metrics,

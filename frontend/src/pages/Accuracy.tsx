@@ -87,6 +87,7 @@ const MODEL_LABEL: Record<string, string> = {
   'poisson-dc-v1': 'v1 · standings',
   'dc-history-v2': 'v2 · history (Dixon-Coles)'
 }
+// Last complete season (football-data.co.uk code: 2526 = 2025/26)
 const BACKTEST_SEASON = '2526'
 
 function Accuracy() {
@@ -121,11 +122,13 @@ function Accuracy() {
   const comps = summary?.byCompetition || []
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6 lg:gap-8 items-start">
+      <div className="min-w-0">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Model accuracy</h2>
-          <p className="text-sm text-gray-500">
+          <h1 className="font-display text-3xl sm:text-4xl font-extrabold tracking-tight text-ink">Accuracy</h1>
+          <p className="text-sm text-muted">
             {tab === 'live'
               ? status
                 ? `${status.settled} settled · ${status.locked} in play or awaiting result · ${status.open} upcoming · ${status.withOdds} with market odds`
@@ -133,16 +136,16 @@ function Accuracy() {
               : 'Walk-forward test on a past season: every week the model is fitted only on matches before that week.'}
           </p>
         </div>
-        <div className="flex gap-1 bg-white rounded-lg shadow-sm p-1">
+        <div className="seg">
           <button
             onClick={() => setTab('live')}
-            className={`px-3 py-1.5 text-sm rounded-md transition ${tab === 'live' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+            className={`seg-btn ${tab === 'live' ? 'seg-btn-active' : ''}`}
           >
             Live tracking
           </button>
           <button
             onClick={() => setTab('backtest')}
-            className={`px-3 py-1.5 text-sm rounded-md transition ${tab === 'backtest' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+            className={`seg-btn ${tab === 'backtest' ? 'seg-btn-active' : ''}`}
           >
             Backtest 2025–26
           </button>
@@ -154,24 +157,22 @@ function Accuracy() {
       {tab === 'live' && (
         <>
       <div className="flex flex-wrap items-center gap-2 mb-4">
-        <div className="flex gap-1 bg-white rounded-lg shadow-sm p-1">
+        <div className="seg">
           {DAY_OPTIONS.map(d => (
             <button
               key={d}
               onClick={() => setDays(d)}
-              className={`px-3 py-1.5 text-sm rounded-md transition ${
-                days === d ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
-              }`}
+              className={`seg-btn ${days === d ? 'seg-btn-active' : ''}`}
             >
               {d}d
             </button>
           ))}
         </div>
         {summary && summary.models.length > 1 && (
-          <div className="flex gap-1 bg-white rounded-lg shadow-sm p-1">
+          <div className="seg">
             <button
               onClick={() => setModel('ALL')}
-              className={`px-3 py-1.5 text-sm rounded-md transition ${model === 'ALL' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+              className={`seg-btn ${model === 'ALL' ? 'seg-btn-active' : ''}`}
             >
               All models
             </button>
@@ -179,7 +180,7 @@ function Accuracy() {
               <button
                 key={m}
                 onClick={() => setModel(m)}
-                className={`px-3 py-1.5 text-sm rounded-md transition ${model === m ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+                className={`seg-btn ${model === m ? 'seg-btn-active' : ''}`}
               >
                 {MODEL_LABEL[m] || m}
               </button>
@@ -199,11 +200,11 @@ function Accuracy() {
         </div>
       )}
 
-      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-5">{error}</div>}
+      {error && <div className="card border-loss/40 text-loss rounded-lg p-4 mb-5">{error}</div>}
 
       {summary && summary.settled === 0 && (
-        <div className="bg-white rounded-xl shadow p-10 text-center text-gray-500">
-          <p className="text-lg font-medium text-gray-700 mb-1">No settled predictions yet</p>
+        <div className="card p-12 text-center text-muted">
+          <p className="font-display text-lg font-bold text-ink mb-1">No settled predictions yet</p>
           <p className="text-sm">
             Predictions are saved for every upcoming match and frozen at kick-off. Once matches finish, they are
             scored here automatically. {summary.pending > 0 && `${summary.pending} prediction${summary.pending === 1 ? '' : 's'} waiting.`}
@@ -219,7 +220,7 @@ function Accuracy() {
           <Section title={`Settled predictions · ${recent.length}`}>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="text-xs text-gray-500">
+                <thead className="label">
                   <tr>
                     <th className="text-left font-medium py-1">Date</th>
                     <th className="text-left font-medium">Match</th>
@@ -233,36 +234,36 @@ function Accuracy() {
                 </thead>
                 <tbody>
                   {recent.map(r => (
-                    <tr key={`${r.matchId}-${r.model}`} className="border-t hover:bg-gray-50">
-                      <td className="py-1.5 text-gray-500 whitespace-nowrap">
+                    <tr key={`${r.matchId}-${r.model}`} className="border-t border-line/50 hover:bg-surface2/60 transition-colors">
+                      <td className="py-1.5 text-muted whitespace-nowrap">
                         {new Date(r.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
                       </td>
                       <td>
                         <Link to={`/match/${r.matchId}`} className="hover:underline">
                           {r.home} – {r.away}
                         </Link>
-                        <span className="text-xs text-gray-400 ml-2 hidden md:inline">{r.competition}</span>
+                        <span className="text-xs text-faint ml-2 hidden md:inline">{r.competition}</span>
                         {model === 'ALL' && (
-                          <span className="text-[10px] text-gray-400 ml-2">{r.model === 'dc-history-v2' ? 'v2' : 'v1'}</span>
+                          <span className="text-[10px] text-faint ml-2">{r.model === 'dc-history-v2' ? 'v2' : 'v1'}</span>
                         )}
                       </td>
-                      <td className="text-center font-semibold tabular-nums">{r.score}</td>
+                      <td className="text-center font-semibold num">{r.score}</td>
                       {(['H', 'D', 'A'] as Outcome[]).map(o => (
                         <td
                           key={o}
-                          className={`text-center tabular-nums ${
-                            r.outcome === o ? 'font-bold text-gray-900' : 'text-gray-500'
+                          className={`text-center num ${
+                            r.outcome === o ? 'font-bold text-ink' : 'text-muted'
                           } ${r.pick === o ? 'underline decoration-2 underline-offset-2' : ''}`}
                         >
                           {Math.round(r.p[o])}%
-                          {r.odds && <div className="text-[10px] text-gray-400">{r.odds[o]}</div>}
+                          {r.odds && <div className="text-[10px] text-faint">{r.odds[o]}</div>}
                         </td>
                       ))}
                       <td className="text-center">{OUTCOME_LABEL[r.pick]}</td>
                       <td className="text-center">
                         <span
-                          className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
-                            r.hit ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                          className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-bold tracking-wider ${
+                            r.hit ? 'bg-win/15 text-win' : 'bg-loss/15 text-loss'
                           }`}
                         >
                           {r.hit ? 'HIT' : 'MISS'}
@@ -278,6 +279,74 @@ function Accuracy() {
       )}
         </>
       )}
+      </div>
+      <Guide tab={tab} settled={tab === 'live' ? summary?.settled ?? 0 : undefined} />
+      </div>
+    </div>
+  )
+}
+
+/* ---------- guide: how to read this page ---------- */
+
+function Guide({ tab, settled }: { tab: 'live' | 'backtest'; settled?: number }) {
+  const small = tab === 'live' && settled !== undefined && settled < 200
+  return (
+    <aside className="lg:sticky lg:top-20 space-y-4">
+      {small && (
+        <div className="card p-4 border-draw/40 bg-draw/5">
+          <div className="flex items-center gap-2 font-semibold text-draw text-sm mb-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-draw" /> Small sample
+          </div>
+          <p className="text-xs text-muted">
+            Only {settled} matches have been scored so far. Below ~200 the numbers swing a lot from week to week; below ~500
+            differences of a few points mean nothing. Treat this as a live log, not a verdict — the Backtest tab has 2,359 matches.
+          </p>
+        </div>
+      )}
+
+      <div className="card p-5">
+        <h3 className="font-display text-base font-bold text-ink mb-1">How to read this page</h3>
+        <p className="text-xs text-muted mb-4">
+          Every prediction is saved, frozen at kick-off, and scored against the result. Nothing here is edited after the fact.
+        </p>
+
+        <dl className="space-y-4 text-xs">
+          <GuideItem term="Hit rate">
+            How often the model's pick (the most likely outcome) was right. Intuitive, but the weakest measure: home teams win
+            ~45% of matches, so a model that always says "home" scores 45% knowing nothing. Experts live around 50–55%.
+          </GuideItem>
+          <GuideItem term="Brier score · Log loss">
+            Measure the <em>quality of the probabilities</em>, not just the pick. Saying 90% and being wrong is punished far more
+            than saying 52% and being wrong. Lower is better. Brier 0.667 and log loss 1.099 are what "always 1/3 each" gets.
+          </GuideItem>
+          <GuideItem term="Market">
+            The same score computed from the bookmaker's odds (Pinnacle, margin removed). The benchmark. Green means we beat it,
+            red means the market knew more.
+          </GuideItem>
+          <GuideItem term="Calibration">
+            The most important chart. Of all matches where the model said 60–70%, how many actually went that way? A calibrated
+            model's bars end at the black line — its 70% really means 70%, so the number can be trusted as a number.
+          </GuideItem>
+          <GuideItem term="Betting simulation">
+            What a flat 1-unit bet on every qualifying selection would have returned at the bookmaker's price. "Value bets" only
+            fire when the model sees an edge over the odds. This is the line between a nice model and a profitable one — and we
+            show it whether it is positive or negative.
+          </GuideItem>
+          <GuideItem term="Live tracking vs Backtest">
+            Live is the real record since the system went online, filling in match by match. Backtest replays a whole past season
+            week by week, fitting only on matches that had already happened — a fast, honest answer while the live log grows.
+          </GuideItem>
+        </dl>
+      </div>
+    </aside>
+  )
+}
+
+function GuideItem({ term, children }: { term: string; children: ReactNode }) {
+  return (
+    <div>
+      <dt className="font-semibold text-ink mb-0.5">{term}</dt>
+      <dd className="text-muted leading-relaxed">{children}</dd>
     </div>
   )
 }
@@ -318,7 +387,7 @@ function MetricsView({ m, groupLabel = 'League' }: { m: Metrics; groupLabel?: st
             <Strategy title={`Value bets (model edge ≥ ${Math.round(m.betting.edgeThreshold * 100)}%)`} s={m.betting.edge} />
             <Strategy title="Always back the model's pick" s={m.betting.favourite} />
           </div>
-          <p className="text-xs text-gray-400 mt-3">
+          <p className="text-xs text-faint mt-3">
             Profit is what a 1-unit bet on each qualifying selection would have returned at the bookmaker's pre-match
             price. This is the number that matters.
           </p>
@@ -327,22 +396,22 @@ function MetricsView({ m, groupLabel = 'League' }: { m: Metrics; groupLabel?: st
 
       <Section title="Calibration · when the model says X%, how often does it happen?">
         {m.calibration.length === 0 ? (
-          <p className="text-sm text-gray-400">Not enough data yet.</p>
+          <p className="text-sm text-faint">Not enough data yet.</p>
         ) : (
           <div className="space-y-2">
             {m.calibration.map(b => (
               <div key={b.range} className="grid grid-cols-[90px_1fr_120px] items-center gap-3 text-sm">
-                <span className="text-gray-500 tabular-nums">{b.range}</span>
-                <div className="relative h-4 bg-gray-100 rounded overflow-hidden">
-                  <div className="absolute inset-y-0 left-0 bg-blue-500/80" style={{ width: `${b.actual}%` }} />
-                  <div className="absolute inset-y-0 w-0.5 bg-gray-900" style={{ left: `${b.predicted}%` }} title={`predicted ${b.predicted}%`} />
+                <span className="text-muted num">{b.range}</span>
+                <div className="relative h-3 bg-surface2 rounded-full overflow-hidden">
+                  <div className="absolute inset-y-0 left-0 bg-accent/80 rounded-full" style={{ width: `${b.actual}%` }} />
+                  <div className="absolute -inset-y-1 w-0.5 bg-ink" style={{ left: `${b.predicted}%` }} title={`predicted ${b.predicted}%`} />
                 </div>
-                <span className="tabular-nums text-gray-700">
-                  {b.actual}% <span className="text-gray-400">of {b.n}</span>
+                <span className="num text-ink/80">
+                  {b.actual}% <span className="text-faint">of {b.n}</span>
                 </span>
               </div>
             ))}
-            <p className="text-xs text-gray-400 pt-1">
+            <p className="text-xs text-faint pt-1">
               Bar = actual hit rate of the model's pick in that confidence band; black line = what the model predicted.
               A well-calibrated model has the bar ending at the line.
             </p>
@@ -353,7 +422,7 @@ function MetricsView({ m, groupLabel = 'League' }: { m: Metrics; groupLabel?: st
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-5">
         <Section title="Picks vs actual outcomes" flat>
           <table className="w-full text-sm">
-            <thead className="text-xs text-gray-500">
+            <thead className="label">
               <tr>
                 <th className="text-left font-medium py-1">Outcome</th>
                 <th className="text-right font-medium">Model picked</th>
@@ -362,10 +431,10 @@ function MetricsView({ m, groupLabel = 'League' }: { m: Metrics; groupLabel?: st
             </thead>
             <tbody>
               {(['H', 'D', 'A'] as Outcome[]).map(o => (
-                <tr key={o} className="border-t">
+                <tr key={o} className="border-t border-line/50">
                   <td className="py-1.5">{OUTCOME_LABEL[o]}</td>
-                  <td className="text-right tabular-nums">{m.picks[o]}</td>
-                  <td className="text-right tabular-nums">{m.outcomes[o]}</td>
+                  <td className="text-right num">{m.picks[o]}</td>
+                  <td className="text-right num">{m.outcomes[o]}</td>
                 </tr>
               ))}
             </tbody>
@@ -373,7 +442,7 @@ function MetricsView({ m, groupLabel = 'League' }: { m: Metrics; groupLabel?: st
         </Section>
         <Section title={`By ${groupLabel.toLowerCase()}`} flat>
           <table className="w-full text-sm">
-            <thead className="text-xs text-gray-500">
+            <thead className="label">
               <tr>
                 <th className="text-left font-medium py-1">{groupLabel}</th>
                 <th className="text-right font-medium">Matches</th>
@@ -385,13 +454,13 @@ function MetricsView({ m, groupLabel = 'League' }: { m: Metrics; groupLabel?: st
             </thead>
             <tbody>
               {m.byCompetition.map(c => (
-                <tr key={c.code} className="border-t">
+                <tr key={c.code} className="border-t border-line/50">
                   <td className="py-1.5">{c.name}</td>
-                  <td className="text-right tabular-nums">{c.n}</td>
-                  <td className="text-right tabular-nums">{c.hitRate}%</td>
-                  <td className="text-right tabular-nums">{c.brier}</td>
-                  <td className="text-right tabular-nums text-gray-500">{c.marketBrier ?? '–'}</td>
-                  <td className={`text-right tabular-nums ${c.profit > 0 ? 'text-green-600' : c.profit < 0 ? 'text-red-600' : ''}`}>
+                  <td className="text-right num">{c.n}</td>
+                  <td className="text-right num">{c.hitRate}%</td>
+                  <td className="text-right num">{c.brier}</td>
+                  <td className="text-right num text-muted">{c.marketBrier ?? '–'}</td>
+                  <td className={`text-right num ${c.profit > 0 ? 'text-win' : c.profit < 0 ? 'text-live' : ''}`}>
                     {c.bets ? `${c.profit > 0 ? '+' : ''}${c.profit.toFixed(1)}u` : '–'}
                   </td>
                 </tr>
@@ -414,13 +483,15 @@ const GROUP_NAME: Record<string, string> = { E: 'England', SP: 'Spain', I: 'Ital
 
 function Backtest() {
   const [group, setGroup] = useState<string>('ALL')
+  const [oddsKind, setOddsKind] = useState<'close' | 'early'>('close')
+  const [edge, setEdge] = useState<number>(0.05)
   const [data, setData] = useState<BacktestData | null>(null)
   const [hist, setHist] = useState<HistoryStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
 
   const load = () => {
-    const params: Record<string, string> = { season: BACKTEST_SEASON }
+    const params: Record<string, string | number> = { season: BACKTEST_SEASON, odds: oddsKind, edge }
     if (group !== 'ALL') params.group = group
     Promise.all([axios.get(`${API_URL}/backtest`, { params }), axios.get(`${API_URL}/history/status`)])
       .then(([b, h]) => {
@@ -431,7 +502,7 @@ function Backtest() {
       .catch(err => setError(err.response?.data?.message || err.message))
   }
 
-  useEffect(load, [group])
+  useEffect(load, [group, oddsKind, edge])
 
   // poll while a run is in progress
   useEffect(() => {
@@ -463,22 +534,46 @@ function Backtest() {
             </Chip>
           ))}
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="seg" title="Which bookmaker price to score against">
+            {(['close', 'early'] as const).map(k => (
+              <button
+                key={k}
+                onClick={() => setOddsKind(k)}
+                className={`seg-btn ${oddsKind === k ? 'seg-btn-active' : ''}`}
+              >
+                {k === 'close' ? 'Closing odds' : 'Early odds (1–3 days before)'}
+              </button>
+            ))}
+          </div>
+          <div className="seg" title="Minimum model edge to place a value bet">
+            {[0.03, 0.05, 0.1, 0.15].map(e => (
+              <button
+                key={e}
+                onClick={() => setEdge(e)}
+                className={`seg-btn ${edge === e ? 'seg-btn-active' : ''}`}
+              >
+                edge ≥ {Math.round(e * 100)}%
+              </button>
+            ))}
+          </div>
         <button
           onClick={start}
           disabled={starting || !!data?.progress}
-          className="px-3 py-1.5 text-sm rounded-md bg-gray-900 text-white disabled:opacity-40"
+          className="px-4 py-2 text-sm font-semibold rounded-xl bg-accent text-bg hover:opacity-90 disabled:opacity-40 transition"
         >
           {data?.progress ? `Running ${GROUP_NAME[data.progress.group] || data.progress.group} · ${data.progress.done}/${data.progress.total}` : 'Run backtest 2025–26'}
         </button>
+        </div>
       </div>
 
       {hist && (
-        <p className="text-xs text-gray-500 mb-4">
+        <p className="text-xs text-muted mb-4">
           History: {hist.history.total.toLocaleString()} matches loaded · model v2 fitted for{' '}
           {Object.keys(hist.model.groups).length} countries
           {hist.model.lastFitAt && ` (${new Date(hist.model.lastFitAt).toLocaleString('en-GB')})`}
           {Object.entries(hist.model.teamMap || {}).some(([, r]) => r.unmatched.length > 0) && (
-            <span className="text-amber-600">
+            <span className="text-draw">
               {' '}· unmatched teams:{' '}
               {Object.entries(hist.model.teamMap)
                 .filter(([, r]) => r.unmatched.length)
@@ -489,11 +584,11 @@ function Backtest() {
         </p>
       )}
 
-      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 mb-5">{error}</div>}
+      {error && <div className="card border-loss/40 text-loss rounded-lg p-4 mb-5">{error}</div>}
 
       {data && data.settled === 0 && !data.progress && (
-        <div className="bg-white rounded-xl shadow p-10 text-center text-gray-500">
-          <p className="text-lg font-medium text-gray-700 mb-1">No backtest yet</p>
+        <div className="card p-12 text-center text-muted">
+          <p className="font-display text-lg font-bold text-ink mb-1">No backtest yet</p>
           <p className="text-sm">Click "Run backtest" — it takes about a minute for all leagues.</p>
         </div>
       )}
@@ -504,7 +599,7 @@ function Backtest() {
           <Section title={`Sample · latest ${data.sample.length} predictions`}>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="text-xs text-gray-500">
+                <thead className="label">
                   <tr>
                     <th className="text-left font-medium py-1">Date</th>
                     <th className="text-left font-medium">Match</th>
@@ -518,19 +613,19 @@ function Backtest() {
                   {data.sample.map((r, i) => {
                     const pick: Outcome = r.p_home >= r.p_draw && r.p_home >= r.p_away ? 'H' : r.p_away >= r.p_draw ? 'A' : 'D'
                     return (
-                      <tr key={i} className="border-t">
-                        <td className="py-1.5 text-gray-500 whitespace-nowrap">{r.date}</td>
+                      <tr key={i} className="border-t border-line/50">
+                        <td className="py-1.5 text-muted whitespace-nowrap">{r.date}</td>
                         <td>
-                          {r.home} – {r.away} <span className="text-xs text-gray-400 ml-1">{DIVISION_NAME[r.division] || r.division}</span>
+                          {r.home} – {r.away} <span className="text-xs text-faint ml-1">{DIVISION_NAME[r.division] || r.division}</span>
                         </td>
-                        <td className="text-center font-semibold tabular-nums">{r.hg}–{r.ag}</td>
+                        <td className="text-center font-semibold num">{r.hg}–{r.ag}</td>
                         {(['H', 'D', 'A'] as Outcome[]).map(o => {
                           const p = o === 'H' ? r.p_home : o === 'D' ? r.p_draw : r.p_away
                           const odds = o === 'H' ? r.odds_home : o === 'D' ? r.odds_draw : r.odds_away
                           return (
-                            <td key={o} className={`text-center tabular-nums ${r.outcome === o ? 'font-bold text-gray-900' : 'text-gray-500'} ${pick === o ? 'underline decoration-2 underline-offset-2' : ''}`}>
+                            <td key={o} className={`text-center num ${r.outcome === o ? 'font-bold text-ink' : 'text-muted'} ${pick === o ? 'underline decoration-2 underline-offset-2' : ''}`}>
                               {Math.round(p)}%
-                              {odds && <div className="text-[10px] text-gray-400">{odds}</div>}
+                              {odds && <div className="text-[10px] text-faint">{odds}</div>}
                             </td>
                           )
                         })}
@@ -551,9 +646,7 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-1.5 text-sm rounded-full border transition ${
-        active ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
-      }`}
+      className={`chip ${active ? 'chip-active' : ''}`}
     >
       {children}
     </button>
@@ -574,11 +667,11 @@ function Tile({
   hint?: string
 }) {
   return (
-    <div className="bg-white rounded-xl shadow p-4" title={hint}>
-      <div className="text-xs text-gray-500 mb-1">{label}</div>
-      <div className="text-2xl font-bold text-gray-900 tabular-nums">{value}</div>
+    <div className="card p-4" title={hint}>
+      <div className="label mb-1.5">{label}</div>
+      <div className="num text-3xl font-extrabold text-ink tracking-tight">{value}</div>
       {sub && (
-        <div className={`text-xs mt-0.5 ${good === undefined ? 'text-gray-400' : good ? 'text-green-600' : 'text-red-500'}`}>
+        <div className={`text-xs mt-0.5 ${good === undefined ? 'text-faint' : good ? 'text-win' : 'text-loss'}`}>
           {sub}
         </div>
       )}
@@ -589,24 +682,24 @@ function Tile({
 function Strategy({ title, s }: { title: string; s: { bets: number; wins: number; profit: number; roi: number } }) {
   const pos = s.profit >= 0
   return (
-    <div className="bg-gray-50 rounded-lg p-4">
-      <div className="text-sm font-medium text-gray-700 mb-2">{title}</div>
+    <div className="rounded-xl bg-surface2/60 border border-line/50 p-4">
+      <div className="text-sm font-medium text-muted mb-2">{title}</div>
       <div className="flex items-baseline gap-4">
         <div>
-          <div className={`text-2xl font-bold tabular-nums ${pos ? 'text-green-600' : 'text-red-600'}`}>
+          <div className={`text-2xl font-bold num ${pos ? 'text-win' : 'text-live'}`}>
             {pos ? '+' : ''}
             {s.profit.toFixed(2)}u
           </div>
-          <div className="text-xs text-gray-500">profit</div>
+          <div className="text-xs text-muted">profit</div>
         </div>
         <div>
-          <div className={`text-lg font-semibold tabular-nums ${pos ? 'text-green-600' : 'text-red-600'}`}>
+          <div className={`text-lg font-semibold num ${pos ? 'text-win' : 'text-live'}`}>
             {pos ? '+' : ''}
             {s.roi}%
           </div>
-          <div className="text-xs text-gray-500">ROI</div>
+          <div className="text-xs text-muted">ROI</div>
         </div>
-        <div className="text-sm text-gray-500 tabular-nums">
+        <div className="text-sm text-muted num">
           {s.bets} bets · {s.wins} won
         </div>
       </div>
@@ -616,8 +709,8 @@ function Strategy({ title, s }: { title: string; s: { bets: number; wins: number
 
 function Section({ title, children, flat }: { title: string; children: ReactNode; flat?: boolean }) {
   return (
-    <section className={`bg-white rounded-xl shadow p-5 ${flat ? '' : 'mt-5'}`}>
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500 mb-3">{title}</h3>
+    <section className={`card p-5 sm:p-6 ${flat ? '' : 'mt-5'}`}>
+      <h3 className="font-display text-base font-bold text-ink mb-4">{title}</h3>
       {children}
     </section>
   )

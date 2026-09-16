@@ -4,62 +4,102 @@ import Dashboard from './pages/Dashboard'
 import MatchDetail from './pages/MatchDetail'
 import Accuracy from './pages/Accuracy'
 import { socket } from './lib/socket'
-import './App.css'
+import { useTheme } from './lib/theme'
+
+function Logo() {
+  return (
+    <Link to="/" className="flex items-center gap-2.5 group">
+      <span className="relative grid place-items-center w-9 h-9 rounded-xl bg-accent text-bg font-display font-extrabold text-sm tracking-tight shadow-card">
+        B2B
+      </span>
+      <span className="font-display font-bold text-lg tracking-tight text-ink">
+        Bet<span className="text-accent">To</span>Beat
+      </span>
+    </Link>
+  )
+}
+
+function ThemeToggle({ theme, onToggle }: { theme: 'dark' | 'light'; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      className="w-9 h-9 grid place-items-center rounded-xl border border-line/80 bg-surface text-muted hover:text-ink hover:border-faint transition-colors"
+      title={theme === 'dark' ? 'Switch to light' : 'Switch to dark'}
+      aria-label="Toggle theme"
+    >
+      {theme === 'dark' ? (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+        </svg>
+      ) : (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+        </svg>
+      )}
+    </button>
+  )
+}
 
 function App() {
   const [connected, setConnected] = useState(socket.connected)
+  const { theme, toggle } = useTheme()
 
   useEffect(() => {
     const onConnect = () => setConnected(true)
     const onDisconnect = () => setConnected(false)
-
     socket.on('connect', onConnect)
     socket.on('disconnect', onDisconnect)
     if (!socket.connected) socket.connect()
-
     return () => {
       socket.off('connect', onConnect)
       socket.off('disconnect', onDisconnect)
     }
   }, [])
 
+  const navCls = ({ isActive }: { isActive: boolean }) =>
+    `px-3.5 py-2 rounded-xl text-sm font-medium transition-colors ${
+      isActive ? 'bg-surface2 text-ink' : 'text-muted hover:text-ink'
+    }`
+
   return (
     <Router>
-      <div className="min-h-screen bg-gray-100">
-        <header className="bg-white shadow">
-          <div className="max-w-7xl mx-auto px-4 py-5 flex items-center justify-between">
-            <Link to="/" className="flex items-baseline gap-2">
-              <span className="text-2xl font-extrabold tracking-tight text-gray-900">Bet To Beat</span>
-              <span className="hidden sm:inline text-xs text-gray-400">football predictions</span>
-            </Link>
-            <div className="flex items-center gap-5">
-              <nav className="flex items-center gap-1 text-sm">
-                <NavLink
-                  to="/"
-                  end
-                  className={({ isActive }) =>
-                    `px-3 py-1.5 rounded-md ${isActive ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`
-                  }
-                >
-                  Matches
-                </NavLink>
-                <NavLink
-                  to="/accuracy"
-                  className={({ isActive }) =>
-                    `px-3 py-1.5 rounded-md ${isActive ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'}`
-                  }
-                >
-                  Accuracy
-                </NavLink>
-              </nav>
-              <div className="flex items-center gap-2 text-sm text-gray-500">
-                <span
-                  className={`inline-block w-2.5 h-2.5 rounded-full ${
-                    connected ? 'bg-green-500' : 'bg-red-500'
-                  }`}
-                />
-                {connected ? 'Live' : 'Disconnected'}
+      <div className="min-h-screen">
+        <header className="sticky top-0 z-40 backdrop-blur-md bg-bg/80 border-b border-line/60">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+            <Logo />
+            <nav className="hidden sm:flex items-center gap-1">
+              <NavLink to="/" end className={navCls}>
+                Matches
+              </NavLink>
+              <NavLink to="/accuracy" className={navCls}>
+                Accuracy
+              </NavLink>
+            </nav>
+            <div className="flex items-center gap-3">
+              <div
+                className={`hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border ${
+                  connected
+                    ? 'border-win/30 text-win bg-win/10'
+                    : 'border-loss/30 text-loss bg-loss/10'
+                }`}
+                title={connected ? 'Live updates connected' : 'Reconnecting…'}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-win animate-pulseDot' : 'bg-loss'}`} />
+                {connected ? 'Live' : 'Offline'}
               </div>
+              <ThemeToggle theme={theme} onToggle={toggle} />
+            </div>
+          </div>
+          {/* mobile nav */}
+          <div className="sm:hidden border-t border-line/60">
+            <div className="max-w-7xl mx-auto px-4 flex gap-1 py-1.5">
+              <NavLink to="/" end className={navCls}>
+                Matches
+              </NavLink>
+              <NavLink to="/accuracy" className={navCls}>
+                Accuracy
+              </NavLink>
             </div>
           </div>
         </header>
@@ -71,6 +111,10 @@ function App() {
             <Route path="/accuracy" element={<Accuracy />} />
           </Routes>
         </main>
+
+        <footer className="max-w-7xl mx-auto px-4 sm:px-6 py-10 text-xs text-faint">
+          Bet To Beat · predictions are probabilities, not promises. Data: Football-Data.org, football-data.co.uk.
+        </footer>
       </div>
     </Router>
   )

@@ -2,21 +2,120 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------- design tokens (RGB triplets, used via tailwind.config.js) ---------- */
+:root {
+  --bg: 244 245 247;
+  --surface: 255 255 255;
+  --surface-2: 240 242 245;
+  --line: 226 229 234;
+  --ink: 17 20 25;
+  --muted: 100 108 120;
+  --faint: 150 157 168;
+  --accent: 16 163 90; /* deep pitch green */
+  --home: 37 99 235; /* blue */
+  --draw: 217 119 6; /* amber */
+  --away: 225 29 72; /* rose */
+  --live: 220 38 38;
+  --win: 22 163 74;
+  --loss: 220 38 38;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: 9 12 17;
+  --surface: 18 23 31;
+  --surface-2: 26 32 42;
+  --line: 38 46 58;
+  --ink: 236 240 245;
+  --muted: 148 158 172;
+  --faint: 98 108 124;
+  --accent: 163 230 53; /* electric lime */
+  --home: 56 189 248; /* sky */
+  --draw: 251 191 36; /* amber */
+  --away: 251 113 133; /* rose */
+  --live: 248 81 73;
+  --win: 74 222 128;
+  --loss: 248 113 113;
+  color-scheme: dark;
+}
+
 * {
-  margin: 0;
-  padding: 0;
   box-sizing: border-box;
 }
 
+html,
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  margin: 0;
+  padding: 0;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+body {
+  @apply bg-bg text-ink font-sans antialiased;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Subtle stadium-light gradient behind the page (dark only) */
+.dark body {
+  background-image:
+    radial-gradient(1200px 500px at 15% -10%, rgb(163 230 53 / 0.07), transparent 60%),
+    radial-gradient(900px 400px at 95% 0%, rgb(56 189 248 / 0.06), transparent 55%);
+  background-repeat: no-repeat;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.35);
+}
+
+/* ---------- reusable pieces ---------- */
+@layer components {
+  .card {
+    @apply bg-surface border border-line/70 rounded-2xl shadow-card;
+  }
+  .card-hover {
+    @apply transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lift hover:border-line;
+  }
+  .num {
+    /* Inter with tabular figures: aligned columns, plain zero (mono fonts slash it) */
+    @apply font-sans tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-faint;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border transition-colors
+      border-line/80 bg-surface text-muted hover:text-ink hover:border-faint;
+  }
+  .chip-active {
+    @apply bg-ink text-bg border-ink hover:text-bg;
+  }
+  .seg {
+    @apply inline-flex p-1 rounded-xl bg-surface2 border border-line/60;
+  }
+  .seg-btn {
+    @apply px-3 py-1.5 text-sm rounded-lg text-muted transition-colors hover:text-ink;
+  }
+  .seg-btn-active {
+    @apply bg-surface text-ink shadow-card;
+  }
+  .side-item {
+    @apply w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-sm text-muted transition-colors hover:bg-surface2 hover:text-ink text-left;
+  }
+  .side-item-active {
+    @apply bg-surface2 text-ink font-semibold;
+  }
+}
+
+/* Thin scrollbars for horizontal rails */
+.rail {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--line)) transparent;
+}
+.rail::-webkit-scrollbar {
+  height: 6px;
+}
+.rail::-webkit-scrollbar-thumb {
+  background: rgb(var(--line));
+  border-radius: 999px;
 }

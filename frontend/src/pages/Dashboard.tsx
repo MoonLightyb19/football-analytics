@@ -36,8 +36,13 @@ interface APIMatch {
   prediction?: Prediction | null
 }
 
+type Pick = 'H' | 'D' | 'A'
+
 const LIVE = new Set(['IN_PLAY', 'PAUSED'])
 const DAY_OPTIONS = [3, 7, 14, 30]
+const PICK_COLOR: Record<Pick, string> = { H: 'text-home', D: 'text-draw', A: 'text-away' }
+const PICK_BG: Record<Pick, string> = { H: 'bg-home', D: 'bg-draw', A: 'bg-away' }
+const PICK_VAR: Record<Pick, string> = { H: '--home', D: '--draw', A: '--away' }
 
 function dayKey(iso: string) {
   const d = new Date(iso)
@@ -49,15 +54,31 @@ function dayLabel(ts: number) {
   const diff = Math.round((ts - today) / 86400000)
   if (diff === 0) return 'Today'
   if (diff === 1) return 'Tomorrow'
-  return new Date(ts).toLocaleDateString('en-GB', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'short'
-  })
+  return new Date(ts).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })
 }
 
 function kickoff(iso: string) {
   return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+}
+
+function pickOf(p: Prediction): Pick {
+  if (p.home >= p.draw && p.home >= p.away) return 'H'
+  if (p.away >= p.draw) return 'A'
+  return 'D'
+}
+
+// "Big club" ranking for the Spotlight — global recognition, not current form.
+const FAME: [RegExp, number][] = [
+  [/real madrid|barcelona|manchester united|liverpool|manchester city|bayern|paris saint|juventus|chelsea|arsenal/i, 10],
+  [/\bac milan|internazionale|atl[ée]tico de madrid|borussia dortmund|tottenham/i, 9],
+  [/napoli|as roma|ajax|benfica|fc porto|sporting clube de portugal|sevilla|leverkusen|marseille|lyonnais|newcastle|aston villa|lazio|atalanta/i, 7],
+  [/villarreal|real sociedad|athletic club|leipzig|psv|feyenoord|west ham|everton|monaco|lille|fiorentina|real betis|valencia|eintracht frankfurt|m[öo]nchengladbach|leeds|nottingham|bologna|stuttgart|braga/i, 5],
+  [/girona|brighton|wolverhampton|torino|celta|wolfsburg|schalke|hamburger|werder|k[öo]ln|union berlin|nice|lens|rennes|strasbourg|crystal palace|fulham|brentford|bournemouth|getafe|osasuna|udinese|genoa|parma|freiburg|hoffenheim|mainz|augsburg|toulouse|nantes|twente|az|utrecht|vit[óo]ria|guimar/i, 3]
+]
+function fame(t: Team) {
+  const n = `${t.name} ${t.shortName || ''}`
+  for (const [re, score] of FAME) if (re.test(n)) return score
+  return 1
 }
 
 function Dashboard() {
@@ -67,8 +88,6 @@ function Dashboard() {
   const [days, setDays] = useState(7)
   const [league, setLeague] = useState<string>('ALL')
 
-  // Fetch the full 30-day window once; the day selector filters locally.
-  // Re-fetch quietly every 5 minutes without blanking the list.
   useEffect(() => {
     let cancelled = false
     const load = (initial: boolean) => {
@@ -95,7 +114,6 @@ function Dashboard() {
     }
   }, [])
 
-  // Live score pushes from the server
   useEffect(() => {
     const onLive = (payload: { data: APIMatch[] }) => {
       const live = new Map(payload.data.map(m => [m.id, m]))
@@ -117,186 +135,522 @@ function Dashboard() {
   const visible = useMemo(() => {
     const cutoff = Date.now() + days * 86400000
     return matches.filter(
-      m =>
-        new Date(m.utcDate).getTime() <= cutoff &&
-        (league === 'ALL' || m.competition.code === league)
+      m => new Date(m.utcDate).getTime() <= cutoff && (league === 'ALL' || m.competition.code === league)
     )
   }, [matches, league, days])
 
+  const live = matches.filter(m => LIVE.has(m.status)) // all leagues, always
+  const upcoming = visible.filter(m => !LIVE.has(m.status))
+
+  // Spotlight: the three biggest games of the coming days — big clubs first, then model strength
+  const spotlight = useMemo(() => {
+    const soon = Date.now() + 4 * 86400000
+    return upcoming
+      .filter(m => new Date(m.utcDate).getTime() <= soon)
+      .map(m => {
+        const fh = fame(m.homeTeam)
+        const fa = fame(m.awayTeam)
+        // the biggest club decides, the opponent adds a little; model strength only breaks ties
+        const f = Math.max(fh, fa) + 0.4 * Math.min(fh, fa)
+        const s = m.prediction ? (m.prediction.factors.homeAttack + m.prediction.factors.awayAttack) / 20 : 0
+        return { m, s: f + s }
+      })
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 3)
+      .map(x => x.m)
+  }, [upcoming])
+  const spotlightIds = useMemo(() => new Set(spotlight.map(m => m.id)), [spotlight])
+
+  // Day lists never repeat a Spotlight match
   const grouped = useMemo(() => {
     const groups = new Map<number, APIMatch[]>()
-    visible.forEach(m => {
-      const k = dayKey(m.utcDate)
-      groups.set(k, [...(groups.get(k) || []), m])
-    })
+    upcoming
+      .filter(m => !spotlightIds.has(m.id))
+      .forEach(m => {
+        const k = dayKey(m.utcDate)
+        groups.set(k, [...(groups.get(k) || []), m])
+      })
     return Array.from(groups.entries()).sort((a, b) => a[0] - b[0])
-  }, [visible])
-
-  const liveCount = matches.filter(m => LIVE.has(m.status)).length
+  }, [upcoming, spotlightIds])
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">
-      {/* Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900">Upcoming Matches</h2>
-          <p className="text-sm text-gray-500">
-            {visible.length} matches in the next {days} days
-            {liveCount > 0 && <span className="ml-2 text-red-600 font-medium">• {liveCount} live</span>}
-          </p>
-        </div>
-        <div className="flex gap-1 bg-white rounded-lg shadow-sm p-1">
-          {DAY_OPTIONS.map(d => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className={`px-3 py-1.5 text-sm rounded-md transition ${
-                days === d ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              {d}d
-            </button>
-          ))}
-        </div>
-      </div>
+    <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 lg:py-8">
+      <div className={`grid grid-cols-1 gap-6 lg:gap-8 items-start ${league === 'ALL' ? 'lg:grid-cols-[250px_1fr]' : 'lg:grid-cols-[250px_1fr] xl:grid-cols-[250px_1fr_320px]'}`}>
+        {/* ---------- Sidebar ---------- */}
+        <aside className="lg:sticky lg:top-20 space-y-6">
+          {/* Live */}
+          <section className="card p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-display font-bold text-ink flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${live.length ? 'bg-live animate-pulseDot' : 'bg-faint'}`} />
+                Live
+              </h2>
+              <span className="num text-xs text-faint">{live.length}</span>
+            </div>
+            {live.length === 0 ? (
+              <p className="text-xs text-faint">No matches in play right now.</p>
+            ) : (
+              <ul className="space-y-1">
+                {live.map(m => (
+                  <li key={m.id}>
+                    <LiveRow match={m} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
-      {/* League filter */}
-      <div className="flex flex-wrap gap-2 mb-6">
-        <button
-          onClick={() => setLeague('ALL')}
-          className={`px-3 py-1.5 text-sm rounded-full border transition ${
-            league === 'ALL'
-              ? 'bg-gray-900 text-white border-gray-900'
-              : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
-          }`}
-        >
-          All leagues
-        </button>
-        {competitions.map(c => (
-          <button
-            key={c.code}
-            onClick={() => setLeague(c.code)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-full border transition ${
-              league === c.code
-                ? 'bg-gray-900 text-white border-gray-900'
-                : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
-            }`}
-          >
-            {c.emblem && <img src={c.emblem} alt="" className="w-4 h-4 object-contain" />}
-            {c.name}
+          {/* Leagues */}
+          <section className="card p-2">
+            <div className="px-2 pt-2 pb-1 label">Leagues</div>
+            <ul className="space-y-0.5">
+              <li>
+                <button onClick={() => setLeague('ALL')} className={`side-item ${league === 'ALL' ? 'side-item-active' : ''}`}>
+                  <span className="w-5 h-5 rounded-md bg-surface2 grid place-items-center text-[10px] font-bold text-muted">★</span>
+                  All leagues
+                  <span className="ml-auto num text-xs text-faint">{matches.length}</span>
+                </button>
+              </li>
+              {competitions.map(c => {
+                const n = matches.filter(m => m.competition.code === c.code).length
+                return (
+                  <li key={c.code}>
+                    <button onClick={() => setLeague(c.code)} className={`side-item ${league === c.code ? 'side-item-active' : ''}`}>
+                      {c.emblem ? (
+                        <img src={c.emblem} alt="" className="w-5 h-5 object-contain" />
+                      ) : (
+                        <span className="w-5 h-5 rounded-md bg-surface2" />
+                      )}
+                      <span className="truncate">{c.name}</span>
+                      <span className="ml-auto num text-xs text-faint">{n}</span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
+        </aside>
+
+        {/* ---------- Main ---------- */}
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-end justify-between gap-4 mb-6">
+            <div>
+              <h1 className="font-display text-3xl sm:text-4xl font-extrabold tracking-tight text-ink">
+                {league === 'ALL' ? 'Matches' : competitions.find(c => c.code === league)?.name || 'Matches'}
+              </h1>
+              <p className="mt-1 text-sm text-muted">
+                <span className="num text-ink font-semibold">{upcoming.length}</span> fixtures in the next {days} days
+              </p>
+            </div>
+            <div className="seg">
+              {DAY_OPTIONS.map(d => (
+                <button key={d} onClick={() => setDays(d)} className={`seg-btn ${days === d ? 'seg-btn-active' : ''}`}>
+                  {d}d
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {loading && (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="card h-44 animate-pulse bg-surface2/60" />
+              ))}
+            </div>
+          )}
+
+          {error && <div className="card p-5 border-loss/40 text-loss">Failed to load matches: {error}</div>}
+
+          {!loading && !error && upcoming.length === 0 && (
+            <div className="card p-12 text-center text-muted">No matches for this selection.</div>
+          )}
+
+          {/* Spotlight */}
+          {!loading && spotlight.length > 0 && (
+            <section className="mb-10">
+              <SectionTitle label="Spotlight" sub="the biggest games of the coming days" />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {spotlight.map(m => (
+                  <SpotlightCard key={m.id} match={m} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* By day */}
+          {!loading &&
+            grouped.map(([ts, dayMatches]) => (
+              <section key={ts} className="mb-10">
+                <SectionTitle label={dayLabel(ts)} count={dayMatches.length} sticky />
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {dayMatches.map((m, i) => (
+                    <MatchCard key={m.id} match={m} delay={i} />
+                  ))}
+                </div>
+              </section>
+            ))}
+        </div>
+
+        {/* ---------- League panel ---------- */}
+        {league !== 'ALL' && <LeaguePanel code={league} />}
+      </div>
+    </div>
+  )
+}
+
+/* ---------- league panel: table, scorers, assists ---------- */
+
+interface StandingRow {
+  position: number
+  team: Team
+  playedGames: number
+  won: number
+  draw: number
+  lost: number
+  goalDifference: number
+  points: number
+  form?: string | null
+}
+interface Scorer {
+  player: { id: number; name: string; nationality?: string }
+  team: Team
+  goals: number | null
+  assists: number | null
+  penalties: number | null
+  playedMatches?: number | null
+}
+
+function LeaguePanel({ code }: { code: string }) {
+  const [tables, setTables] = useState<{ type: string; group?: string | null; table: StandingRow[] }[]>([])
+  const [scorers, setScorers] = useState<Scorer[]>([])
+  const [tab, setTab] = useState<'table' | 'scorers' | 'assists'>('table')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setError(null)
+    Promise.all([axios.get(`${API_URL}/leagues/${code}/standings`), axios.get(`${API_URL}/leagues/${code}/scorers`, { params: { limit: 40 } })])
+      .then(([st, sc]) => {
+        if (cancelled) return
+        setTables(st.data.data?.standings || [])
+        setScorers(sc.data.data?.scorers || [])
+      })
+      .catch(err => !cancelled && setError(err.response?.data?.message || err.message))
+    return () => {
+      cancelled = true
+    }
+  }, [code])
+
+  const totals = tables.filter(t => t.type === 'TOTAL')
+  const topScorers = [...scorers].sort((a, b) => (b.goals || 0) - (a.goals || 0) || (b.assists || 0) - (a.assists || 0)).slice(0, 15)
+  const topAssists = [...scorers].filter(s => (s.assists || 0) > 0).sort((a, b) => (b.assists || 0) - (a.assists || 0) || (b.goals || 0) - (a.goals || 0)).slice(0, 15)
+
+  return (
+    <aside className="xl:sticky xl:top-20 space-y-4">
+      <div className="seg w-full">
+        {(['table', 'scorers', 'assists'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)} className={`seg-btn flex-1 ${tab === t ? 'seg-btn-active' : ''}`}>
+            {t === 'table' ? 'Table' : t === 'scorers' ? 'Scorers' : 'Assists'}
           </button>
         ))}
       </div>
 
-      {loading && <div className="text-center text-gray-500 py-16">Loading matches…</div>}
+      {error && <div className="card p-4 text-xs text-loss">{error}</div>}
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4">
-          Failed to load matches: {error}
-        </div>
-      )}
-
-      {!loading && !error && visible.length === 0 && (
-        <div className="bg-white rounded-lg shadow p-10 text-center text-gray-500">
-          No matches found for this selection.
-        </div>
-      )}
-
-      {!loading &&
-        grouped.map(([ts, dayMatches]) => (
-          <section key={ts} className="mb-8">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500 mb-3">
-              {dayLabel(ts)}{' '}
-              <span className="text-gray-400 font-normal normal-case">· {dayMatches.length} matches</span>
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {dayMatches.map(m => (
-                <MatchCard key={m.id} match={m} />
-              ))}
-            </div>
+      {tab === 'table' &&
+        (totals.length ? totals : tables).map((t, i) => (
+          <section key={i} className="card p-3">
+            {t.group && <div className="label px-1 pb-2">{t.group.replace(/_/g, ' ')}</div>}
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-faint">
+                  <th className="text-left font-medium py-1 pl-1 w-6">#</th>
+                  <th className="text-left font-medium py-1">Team</th>
+                  <th className="text-right font-medium py-1 num">P</th>
+                  <th className="text-right font-medium py-1 num">GD</th>
+                  <th className="text-right font-medium py-1 pr-1 num">Pts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {t.table.map(r => (
+                  <tr key={r.team.id} className="border-t border-line/50">
+                    <td className="py-1.5 pl-1 num text-faint">{r.position}</td>
+                    <td className="py-1.5">
+                      <span className="flex items-center gap-2 min-w-0">
+                        <Crest team={r.team} size={16} />
+                        <span className="truncate text-ink">{r.team.shortName || r.team.name}</span>
+                      </span>
+                    </td>
+                    <td className="py-1.5 text-right num text-muted">{r.playedGames}</td>
+                    <td className={`py-1.5 text-right num ${r.goalDifference > 0 ? 'text-win' : r.goalDifference < 0 ? 'text-loss' : 'text-muted'}`}>
+                      {r.goalDifference > 0 ? '+' : ''}
+                      {r.goalDifference}
+                    </td>
+                    <td className="py-1.5 pr-1 text-right num font-bold text-ink">{r.points}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </section>
         ))}
-    </div>
-  )
-}
 
-function TeamRow({ team, score, bold }: { team: Team; score?: number | null; bold?: boolean }) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <div className="flex items-center gap-2 min-w-0">
-        {team.crest ? (
-          <img src={team.crest} alt="" className="w-6 h-6 object-contain flex-shrink-0" />
-        ) : (
-          <span className="w-6 h-6 rounded-full bg-gray-200 flex-shrink-0" />
-        )}
-        <span className={`truncate text-sm ${bold ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
-          {team.shortName || team.name}
-        </span>
-      </div>
-      {score !== undefined && score !== null && (
-        <span className="font-bold text-gray-900 tabular-nums">{score}</span>
+      {tab !== 'table' && (
+        <section className="card p-3">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-faint">
+                <th className="text-left font-medium py-1 pl-1 w-6">#</th>
+                <th className="text-left font-medium py-1">Player</th>
+                <th className="text-right font-medium py-1 num">{tab === 'scorers' ? 'G' : 'A'}</th>
+                <th className="text-right font-medium py-1 pr-1 num">{tab === 'scorers' ? 'A' : 'G'}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(tab === 'scorers' ? topScorers : topAssists).map((sc, i) => (
+                <tr key={sc.player.id} className="border-t border-line/50">
+                  <td className="py-1.5 pl-1 num text-faint">{i + 1}</td>
+                  <td className="py-1.5">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <Crest team={sc.team} size={16} />
+                      <span className="min-w-0">
+                        <span className="block truncate text-ink">{sc.player.name}</span>
+                        <span className="block truncate text-[10px] text-faint">{sc.team.shortName || sc.team.name}</span>
+                      </span>
+                    </span>
+                  </td>
+                  <td className="py-1.5 text-right num font-bold text-ink">{tab === 'scorers' ? sc.goals ?? 0 : sc.assists ?? 0}</td>
+                  <td className="py-1.5 pr-1 text-right num text-muted">{tab === 'scorers' ? sc.assists ?? 0 : sc.goals ?? 0}</td>
+                </tr>
+              ))}
+              {(tab === 'scorers' ? topScorers : topAssists).length === 0 && (
+                <tr>
+                  <td colSpan={4} className="py-4 text-center text-faint">No data yet this season.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          {tab === 'assists' && <p className="text-[10px] text-faint mt-2 px-1">Assists from the top-40 scorers list.</p>}
+        </section>
       )}
+    </aside>
+  )
+}
+
+/* ---------- pieces ---------- */
+
+function SectionTitle({
+  label,
+  sub,
+  count,
+  accent,
+  sticky
+}: {
+  label: string
+  sub?: string
+  count?: number
+  accent?: 'live'
+  sticky?: boolean
+}) {
+  return (
+    <div className={`flex items-baseline gap-3 mb-3 ${sticky ? 'sticky top-16 z-30 py-2 -my-2 bg-bg/90 backdrop-blur' : ''}`}>
+      <h2 className={`font-display text-lg font-bold tracking-tight ${accent === 'live' ? 'text-live' : 'text-ink'}`}>
+        {accent === 'live' && <span className="inline-block w-2 h-2 rounded-full bg-live animate-pulseDot mr-2 align-middle" />}
+        {label}
+      </h2>
+      {count !== undefined && <span className="num text-xs text-faint">{count} matches</span>}
+      {sub && <span className="text-xs text-faint">{sub}</span>}
     </div>
   )
 }
 
-function MatchCard({ match }: { match: APIMatch }) {
+function LiveRow({ match }: { match: APIMatch }) {
+  const ft = match.score?.fullTime
+  return (
+    <Link to={`/match/${match.id}`} className="block rounded-xl px-2 py-2 hover:bg-surface2 transition-colors">
+      <div className="flex items-center justify-between text-[10px] text-faint mb-1">
+        <span className="truncate">{match.competition.name}</span>
+        <span className="font-bold text-live tracking-wider">{match.status === 'PAUSED' ? 'HT' : 'LIVE'}</span>
+      </div>
+      {[match.homeTeam, match.awayTeam].map((t, i) => (
+        <div key={t.id} className="flex items-center justify-between gap-2 py-0.5">
+          <span className="flex items-center gap-2 min-w-0">
+            <Crest team={t} size={18} />
+            <span className="text-sm font-medium text-ink truncate">{t.shortName || t.name}</span>
+          </span>
+          <span className="num text-sm font-bold text-ink">{i === 0 ? ft?.home ?? 0 : ft?.away ?? 0}</span>
+        </div>
+      ))}
+    </Link>
+  )
+}
+
+function Crest({ team, size = 32 }: { team: Team; size?: number }) {
+  return team.crest ? (
+    <img src={team.crest} alt="" width={size} height={size} className="object-contain flex-shrink-0 drop-shadow-sm" style={{ width: size, height: size }} />
+  ) : (
+    <span className="rounded-full bg-surface2 flex-shrink-0 grid place-items-center text-[10px] text-faint" style={{ width: size, height: size }}>
+      {team.tla || '?'}
+    </span>
+  )
+}
+
+function ProbBar({ p, pick, height = 'h-2' }: { p: Prediction; pick: Pick; height?: string }) {
+  const seg = (k: Pick, v: number) => (
+    <div
+      className={`${PICK_BG[k]} rounded-full transition-all ${pick === k ? 'opacity-100' : 'opacity-35'}`}
+      style={{ width: `calc(${v}% - 3px)` }}
+    />
+  )
+  return (
+    <div className={`flex ${height} gap-[3px]`}>
+      {seg('H', p.home)}
+      {seg('D', p.draw)}
+      {seg('A', p.away)}
+    </div>
+  )
+}
+
+function ProbRow({ p, pick, big }: { p: Prediction; pick: Pick; big?: boolean }) {
+  const cell = (k: Pick, v: number, label: string) => (
+    <div className={`flex items-baseline gap-1.5 ${pick === k ? PICK_COLOR[k] : 'text-faint'}`}>
+      <span className={`text-[11px] font-semibold ${pick === k ? '' : 'text-faint'}`}>{label}</span>
+      <span className={`num font-semibold ${big ? 'text-xl' : 'text-sm'}`}>{Math.round(v)}%</span>
+    </div>
+  )
+  return (
+    <div className="flex justify-between">
+      {cell('H', p.home, '1')}
+      {cell('D', p.draw, 'X')}
+      {cell('A', p.away, '2')}
+    </div>
+  )
+}
+
+function ConfidenceTag({ c }: { c: Prediction['confidence'] }) {
+  const cls = c === 'high' ? 'text-win border-win/30 bg-win/10' : c === 'medium' ? 'text-muted border-line' : 'text-draw border-draw/30 bg-draw/10'
+  return <span className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wider ${cls}`}>{c}</span>
+}
+
+function MatchCard({ match, delay = 0 }: { match: APIMatch; delay?: number }) {
   const isLive = LIVE.has(match.status)
   const p = match.prediction
+  const pick = p ? pickOf(p) : null
   const ft = match.score?.fullTime
 
   return (
     <Link
       to={`/match/${match.id}`}
-      className="block bg-white rounded-lg shadow hover:shadow-md transition-shadow p-4"
+      className={`card card-hover relative overflow-hidden p-4 block animate-rise ${isLive ? 'shadow-glow border-live/40' : ''}`}
+      style={{ animationDelay: `${Math.min(delay, 8) * 40}ms` }}
     >
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-1.5 text-xs text-gray-500 min-w-0">
-          {match.competition.emblem && (
-            <img src={match.competition.emblem} alt="" className="w-4 h-4 object-contain" />
-          )}
+      {/* favourite tint */}
+      {pick && (
+        <div
+          className="pointer-events-none absolute -top-16 -right-16 w-48 h-48 rounded-full opacity-[0.14] blur-2xl"
+          style={{ background: `rgb(var(${PICK_VAR[pick]}))` }}
+        />
+      )}
+
+      <div className="relative flex items-center justify-between mb-3">
+        <div className="flex items-center gap-1.5 text-xs text-muted min-w-0">
+          {match.competition.emblem && <img src={match.competition.emblem} alt="" className="w-4 h-4 object-contain" />}
           <span className="truncate">{match.competition.name}</span>
-          {match.matchday && <span className="text-gray-400">· MD {match.matchday}</span>}
+          {match.matchday && <span className="text-faint">· MD {match.matchday}</span>}
         </div>
         {isLive ? (
-          <span className="flex items-center gap-1 text-xs font-semibold text-red-600">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse" />
+          <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-live tracking-wider">
+            <span className="w-1.5 h-1.5 rounded-full bg-live animate-pulseDot" />
             {match.status === 'PAUSED' ? 'HT' : 'LIVE'}
           </span>
         ) : (
-          <span className="text-xs text-gray-500 tabular-nums">{kickoff(match.utcDate)}</span>
+          <span className="num text-xs text-muted">{kickoff(match.utcDate)}</span>
         )}
       </div>
 
-      <div className="space-y-1.5 mb-4">
-        <TeamRow team={match.homeTeam} score={isLive ? ft?.home : undefined} bold />
-        <TeamRow team={match.awayTeam} score={isLive ? ft?.away : undefined} bold />
+      <div className="relative space-y-2 mb-4">
+        {[match.homeTeam, match.awayTeam].map((t, i) => {
+          const side: Pick = i === 0 ? 'H' : 'A'
+          const score = isLive ? (i === 0 ? ft?.home : ft?.away) : undefined
+          return (
+            <div key={t.id} className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <Crest team={t} size={30} />
+                <span className={`font-display font-semibold truncate ${pick === side ? 'text-ink' : 'text-ink/80'}`}>{t.shortName || t.name}</span>
+              </div>
+              {score !== undefined && score !== null && <span className="num text-2xl font-bold text-ink">{score}</span>}
+            </div>
+          )
+        })}
       </div>
 
-      {/* Prediction bar */}
-      {p ? (
-        <div>
-          <div className="flex h-2 rounded-full overflow-hidden bg-gray-100">
-            <div className="bg-blue-500" style={{ width: `${p.home}%` }} />
-            <div className="bg-yellow-400" style={{ width: `${p.draw}%` }} />
-            <div className="bg-red-500" style={{ width: `${p.away}%` }} />
+      {p && pick ? (
+        <div className="relative">
+          <ProbBar p={p} pick={pick} />
+          <div className="mt-2">
+            <ProbRow p={p} pick={pick} />
           </div>
-          <div className="flex justify-between text-xs mt-1.5 tabular-nums">
-            <span className="text-blue-600 font-medium">1 · {Math.round(p.home)}%</span>
-            <span className="text-yellow-600 font-medium">X · {Math.round(p.draw)}%</span>
-            <span className="text-red-600 font-medium">2 · {Math.round(p.away)}%</span>
-          </div>
-          <div className="flex justify-between text-[11px] text-gray-400 mt-1 tabular-nums">
-            <span>xG {p.expectedGoals.home} – {p.expectedGoals.away}</span>
-            <span>O2.5 {Math.round(p.over25)}%</span>
-            <span className={p.confidence === 'low' ? 'text-amber-500' : ''}>
-              {p.confidence === 'low' ? 'low conf.' : p.confidence === 'high' ? 'high conf.' : 'med conf.'}
+          <div className="mt-2.5 flex items-center justify-between text-[11px] text-faint">
+            <span className="num">
+              xG {p.expectedGoals.home} – {p.expectedGoals.away}
             </span>
+            <span className="num">O2.5 {Math.round(p.over25)}%</span>
+            <ConfidenceTag c={p.confidence} />
           </div>
         </div>
       ) : (
-        <div className="text-xs text-gray-400">No prediction available</div>
+        <div className="text-xs text-faint">No prediction available</div>
       )}
+    </Link>
+  )
+}
+
+function SpotlightCard({ match }: { match: APIMatch }) {
+  const p = match.prediction!
+  const pick = pickOf(p)
+  const favName = pick === 'H' ? match.homeTeam.shortName || match.homeTeam.name : pick === 'A' ? match.awayTeam.shortName || match.awayTeam.name : 'Draw'
+  const favProb = pick === 'H' ? p.home : pick === 'A' ? p.away : p.draw
+  const d = new Date(match.utcDate)
+
+  return (
+    <Link to={`/match/${match.id}`} className="card card-hover relative overflow-hidden p-5 block">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.12]"
+        style={{ background: `radial-gradient(400px 200px at 50% 110%, rgb(var(${PICK_VAR[pick]})), transparent 70%)` }}
+      />
+      <div className="relative flex items-center justify-between text-xs text-muted mb-4">
+        <span className="flex items-center gap-1.5">
+          {match.competition.emblem && <img src={match.competition.emblem} alt="" className="w-4 h-4 object-contain" />}
+          {match.competition.name}
+        </span>
+        <span className="num">
+          {d.toLocaleDateString('en-GB', { weekday: 'short' })} {kickoff(match.utcDate)}
+        </span>
+      </div>
+
+      <div className="relative grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <div className="flex flex-col items-center text-center gap-2 min-w-0">
+          <Crest team={match.homeTeam} size={56} />
+          <span className="font-display font-bold text-ink leading-tight text-sm truncate max-w-full" title={match.homeTeam.name}>{match.homeTeam.shortName || match.homeTeam.name}</span>
+        </div>
+        <div className="font-display text-faint text-sm font-bold">VS</div>
+        <div className="flex flex-col items-center text-center gap-2 min-w-0">
+          <Crest team={match.awayTeam} size={56} />
+          <span className="font-display font-bold text-ink leading-tight text-sm truncate max-w-full" title={match.awayTeam.name}>{match.awayTeam.shortName || match.awayTeam.name}</span>
+        </div>
+      </div>
+
+      <div className="relative mt-5">
+        <div className="flex items-baseline justify-between gap-2 mb-2">
+          <span className="label whitespace-nowrap">Pick</span>
+          <span className={`font-display font-bold truncate ${PICK_COLOR[pick]}`}>
+            {favName} <span className="num">{Math.round(favProb)}%</span>
+          </span>
+        </div>
+        <ProbBar p={p} pick={pick} height="h-2.5" />
+        <div className="mt-2">
+          <ProbRow p={p} pick={pick} />
+        </div>
+      </div>
     </Link>
   )
 }

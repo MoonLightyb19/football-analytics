@@ -39,11 +39,33 @@ db.exec(`
     p_draw      REAL NOT NULL,
     p_away      REAL NOT NULL,
     xg_home     REAL, xg_away REAL,
-    odds_home   REAL, odds_draw REAL, odds_away REAL,
+    odds_home   REAL, odds_draw REAL, odds_away REAL,      -- closing (fallback early)
+    early_h     REAL, early_d REAL, early_a REAL,          -- 1-3 days before kick-off
     evidence    REAL,
     PRIMARY KEY (run_id, division, date, home, away)
   );
 `);
+// Schema upgrade: older databases lack the early_* columns → rebuild (backtests are cheap to re-run)
+{
+  const cols: any[] = db.prepare(`PRAGMA table_info(backtest_predictions)`).all();
+  if (cols.length && !cols.some(c => c.name === 'early_h')) {
+    db.exec(`DROP TABLE backtest_predictions; DROP TABLE backtest_runs;`);
+    db.exec(`
+      CREATE TABLE backtest_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, season TEXT NOT NULL, grp TEXT NOT NULL, model TEXT NOT NULL,
+        matches INTEGER NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, params TEXT
+      );
+      CREATE TABLE backtest_predictions (
+        run_id INTEGER NOT NULL, division TEXT NOT NULL, date TEXT NOT NULL, home TEXT NOT NULL, away TEXT NOT NULL,
+        hg INTEGER NOT NULL, ag INTEGER NOT NULL, outcome TEXT NOT NULL,
+        p_home REAL NOT NULL, p_draw REAL NOT NULL, p_away REAL NOT NULL, xg_home REAL, xg_away REAL,
+        odds_home REAL, odds_draw REAL, odds_away REAL, early_h REAL, early_d REAL, early_a REAL, evidence REAL,
+        PRIMARY KEY (run_id, division, date, home, away)
+      );
+    `);
+    logger.info('backtest tables rebuilt with early-odds columns');
+  }
+}
 
 /** Fit (or refit) every group from the stored history, as of today. */
 export function fitAllGroups(asOf: string = new Date().toISOString().slice(0, 10)) {
@@ -150,8 +172,8 @@ export async function prepareModelV2(standingsByCode: Map<string, any>, forceSyn
 
 const insertBt = db.prepare(`
   INSERT OR REPLACE INTO backtest_predictions
-    (run_id, division, date, home, away, hg, ag, outcome, p_home, p_draw, p_away, xg_home, xg_away, odds_home, odds_draw, odds_away, evidence)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (run_id, division, date, home, away, hg, ag, outcome, p_home, p_draw, p_away, xg_home, xg_away, odds_home, odds_draw, odds_away, early_h, early_d, early_a, evidence)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 let running: { season: string; group: string; done: number; total: number } | null = null;
@@ -199,6 +221,7 @@ export async function runBacktest(season: string, group: string) {
           runId, m.division, m.date, m.home, m.away, m.hg, m.ag, outcome,
           dc.home, dc.draw, dc.away, dc.lambdaHome, dc.lambdaAway,
           m.close_h ?? m.odds_h, m.close_d ?? m.odds_d, m.close_a ?? m.odds_a,
+          m.odds_h, m.odds_d, m.odds_a,
           Math.min(dc.evidence.home, dc.evidence.away)
         );
         predicted++;
@@ -242,6 +265,9 @@ export interface BacktestRow {
   odds_home: number | null;
   odds_draw: number | null;
   odds_away: number | null;
+  early_h: number | null;
+  early_d: number | null;
+  early_a: number | null;
   evidence: number;
 }
 
