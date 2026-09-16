@@ -303,7 +303,9 @@ function MatchDetail() {
   const live = LIVE.has(m.status)
   const done = DONE.has(m.status)
   const showScore = live || done
-  const models = details.predictions && details.predictions.length ? details.predictions : details.prediction ? [details.prediction] : []
+  // v1 (standings) is a fallback only: shown when no other model covers the match
+  const allModels = details.predictions && details.predictions.length ? details.predictions : details.prediction ? [details.prediction] : []
+  const models = allModels.some(m => m.model !== 'poisson-dc-v1') ? allModels.filter(m => m.model !== 'poisson-dc-v1') : allModels
   const p = (modelId && models.find(m => m.model === modelId)) || details.prediction || models[0] || null
   const ft = m.score.fullTime
   const ht = m.score.halfTime

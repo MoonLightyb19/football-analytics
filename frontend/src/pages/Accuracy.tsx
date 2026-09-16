@@ -94,7 +94,7 @@ function Accuracy() {
   const [tab, setTab] = useState<'live' | 'backtest'>('live')
   const [days, setDays] = useState(90)
   const [competition, setCompetition] = useState<string>('ALL')
-  const [model, setModel] = useState<string>('ALL')
+  const [model, setModel] = useState<string>('dc-history-v2') // v1 stays tracked in the background as a baseline
   const [summary, setSummary] = useState<Summary | null>(null)
   const [recent, setRecent] = useState<Settled[]>([])
   const [status, setStatus] = useState<Status | null>(null)
@@ -170,21 +170,20 @@ function Accuracy() {
         </div>
         {summary && summary.models.length > 1 && (
           <div className="seg">
+            {summary.models
+              .filter(m => m !== 'poisson-dc-v1')
+              .map(m => (
+                <button key={m} onClick={() => setModel(m)} className={`seg-btn ${model === m ? 'seg-btn-active' : ''}`}>
+                  {MODEL_LABEL[m] || m}
+                </button>
+              ))}
             <button
               onClick={() => setModel('ALL')}
               className={`seg-btn ${model === 'ALL' ? 'seg-btn-active' : ''}`}
+              title="Include the v1 standings baseline"
             >
-              All models
+              Compare all
             </button>
-            {summary.models.map(m => (
-              <button
-                key={m}
-                onClick={() => setModel(m)}
-                className={`seg-btn ${model === m ? 'seg-btn-active' : ''}`}
-              >
-                {MODEL_LABEL[m] || m}
-              </button>
-            ))}
           </div>
         )}
       </div>
