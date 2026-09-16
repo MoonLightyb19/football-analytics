@@ -71,7 +71,25 @@ FOOTBALL_DATA_BASE_URL=https://api.football-data.org/v4
 PORT=3001
 COMPETITIONS=PL,PD,SA,BL1,FL1,CL,DED,PPL,ELC   # optional override
 LIVE_POLL_MS=60000                             # live-score push interval
+ODDS_API_KEY=...                               # the-odds-api.com key → market odds on every match
+ODDS_DAILY_BUDGET=16                           # credits/day (free tier = 500/month); raise on a paid plan
+ODDS_REGIONS=eu                                # bookmaker region(s); each region costs 1 credit per fetch
+ODDS_BOOKMAKER=pinnacle                        # preferred book for the main line (else median of all books)
 ```
+
+## Market odds
+
+With `ODDS_API_KEY` set, the server pulls h2h odds from The Odds API for every competition:
+a fetch every ~8 h in the two days before a match, and every ~75 min in the last two hours
+(the closing line, which is what tracking stores). One fetch per competition costs one
+credit, so a budget-aware scheduler (`backend/src/services/odds.ts`) stays inside the
+daily budget and prioritises the big competitions. Odds are matched to fixtures by
+kick-off time and team name, shown on every match card and match page (margin-free
+probabilities and model-vs-market gap), and stored on the prediction at kick-off so the
+Accuracy page can score the model against the market.
+
+`GET /api/odds/status` shows credits and last fetch per competition;
+`POST /api/odds/refresh?competition=PL` forces one fetch (1 credit).
 
 ## Deploying (Railway)
 
@@ -85,6 +103,7 @@ persistent volume so tracking survives restarts and redeploys.
    ```
    FOOTBALL_DATA_API_KEY=...
    DATA_DIR=/data
+   ODDS_API_KEY=...        # optional, market odds
    ```
    (`NODE_ENV=production`, `PORT` and `STATIC_DIR` are set by the image.)
 3. **Volume**: add one to the service, mount path `/data`.
@@ -112,6 +131,7 @@ GET /api/leagues
 GET /api/leagues/:code/standings
 GET /api/teams/:id
 GET /api/health
+GET /api/odds/status · POST /api/odds/refresh?competition=PL
 GET /api/accuracy?days=90&competition=PL&model=dc-history-v2
 GET /api/accuracy/recent · /api/accuracy/status · POST /api/accuracy/settle
 GET /api/history/status · GET /api/history/teams · POST /api/history/sync

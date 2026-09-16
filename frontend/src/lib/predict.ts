@@ -33,3 +33,23 @@ export const CONFIDENCE_LABEL: Record<Prediction['confidence'], string> = {
   medium: 'Medium confidence',
   high: 'High confidence'
 }
+
+/** Bookmaker market for a match (backend/src/services/odds.ts). Probabilities are margin-free, in %. */
+export interface Market {
+  msw: { homeWin: number; draw: number; awayWin: number }
+  bookmaker: string
+  books: number
+  best: { homeWin: number | null; draw: number | null; awayWin: number | null }
+  probs: { home: number; draw: number; away: number }
+  overround: number
+  fetchedAt: string
+}
+
+export const BOOK_LABEL: Record<string, string> = {
+  pinnacle: 'Pinnacle',
+  median: 'Market median'
+}
+
+export function bookLabel(m: Market) {
+  return BOOK_LABEL[m.bookmaker] || m.bookmaker.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}

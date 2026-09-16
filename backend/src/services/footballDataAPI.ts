@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import logger from '../utils/logger';
 import { predictFromStandings, Prediction, StandingsResponse } from './predictionModel';
 import { predictV2, prepareModelV2 } from './historyModel';
+import { withMarket, oddsFor } from './odds';
 
 // Competitions to load. Override with COMPETITIONS=PL,PD,... in .env
 const DEFAULT_COMPETITIONS = ['PL', 'PD', 'SA', 'BL1', 'FL1', 'CL', 'DED', 'PPL', 'ELC'];
@@ -287,8 +288,9 @@ class FootballDataAPI {
     return all.find(p => p.model.startsWith('dc-history')) || all[0] || null;
   }
 
+  /** Attach model predictions and (when stored) market odds to match objects. */
   withPredictions<T extends { id: number }>(matches: T[]): (T & { prediction: Prediction | null; predictions: Prediction[] })[] {
-    return matches.map(m => {
+    return withMarket(matches).map(m => {
       const predictions = this.allPredictionsFor(m);
       return { ...m, prediction: predictions.find(p => p.model.startsWith('dc-history')) || predictions[0] || null, predictions };
     });
@@ -614,7 +616,8 @@ class FootballDataAPI {
         away: standings ? this.findStandingRow(standings, awayId) : null
       },
       form: { home: homeForm, away: awayForm },
-      probableLineups: wantProbable ? { home: probHome, away: probAway } : null
+      probableLineups: wantProbable ? { home: probHome, away: probAway } : null,
+      market: oddsFor(matchId)
     };
   }
 }

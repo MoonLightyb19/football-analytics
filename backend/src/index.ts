@@ -20,6 +20,7 @@ import footballDataAPI from './services/footballDataAPI';
 import { recordPredictions, settlePending, accuracy, recentSettled, trackingStatus, computeMetrics } from './services/tracking';
 import { historyStatus, teamMapStatus, GROUPS } from './services/history';
 import { modelV2Status, runBacktest, runBacktestAll, backtestProgress, backtestRows, backtestRunsList } from './services/historyModel';
+import { oddsTick, oddsStatus, fetchCompetitionOdds, SPORT_KEYS } from './services/odds';
 
 const isDev = (process.env.NODE_ENV || 'development') !== 'production';
 
@@ -155,6 +156,29 @@ app.get('/api/teams/:id(\\d+)', async (req, res) => {
     res.json({ data: team, timestamp: new Date().toISOString() });
   } catch (error: any) {
     sendError(res, error, 'Failed to fetch team');
+  }
+});
+
+// ---------- Market odds (The Odds API) ----------
+
+app.get('/api/odds/status', (_req, res) => {
+  try {
+    res.json({ data: oddsStatus(), timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Failed to read odds status');
+  }
+});
+
+// Manual fetch for one competition (costs 1 credit) — handy for testing the matching
+app.post('/api/odds/refresh', async (req, res) => {
+  try {
+    const code = String(req.query.competition || '').toUpperCase();
+    if (!SPORT_KEYS[code]) return res.status(400).json({ error: `Unknown competition. One of: ${Object.keys(SPORT_KEYS).join(', ')}` });
+    const fixtures = (await footballDataAPI.getUpcomingMatches(30)).filter(m => m.competition?.code === code);
+    const result = await fetchCompetitionOdds(code, fixtures);
+    res.json({ data: { ...result, fixtures: fixtures.length, status: oddsStatus() }, timestamp: new Date().toISOString() });
+  } catch (error: any) {
+    sendError(res, error, 'Odds refresh failed');
   }
 });
 
@@ -363,6 +387,14 @@ server.listen(PORT, () => {
     );
   setTimeout(settle, 60 * 1000);
   setInterval(settle, parseInt(process.env.SETTLE_INTERVAL_MS || '600000', 10));
+  // Market odds: decide every 10 minutes which competitions deserve a fetch (budget-aware)
+  const odds = () =>
+    footballDataAPI
+      .getUpcomingMatches(30)
+      .then(ms => oddsTick(ms))
+      .catch(err => logger.warn('Odds job failed', { message: err.message }));
+  setTimeout(odds, 90 * 1000);
+  setInterval(odds, parseInt(process.env.ODDS_TICK_MS || '600000', 10));
 });
 
 export { app, io };

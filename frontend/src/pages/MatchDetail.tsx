@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import axios from 'axios'
 import { API_URL, socket } from '../lib/socket'
-import { fairOdds, CONFIDENCE_LABEL, type Prediction } from '../lib/predict'
+import { fairOdds, bookLabel, CONFIDENCE_LABEL, type Market, type Prediction } from '../lib/predict'
 
 /* ---------- types (Football-Data.org v4 shapes, loosely) ---------- */
 
@@ -107,6 +107,7 @@ interface Details {
   standings: { home: StandingRow | null; away: StandingRow | null }
   form: { home: Match[]; away: Match[] }
   probableLineups?: { home: Probable | null; away: Probable | null } | null
+  market?: Market | null
 }
 
 /** A team's usual XI, built by the backend from its last few matches. */
@@ -404,6 +405,8 @@ function MatchDetail() {
                   <div className={`rounded-full bg-away ${pick === 'A' ? '' : 'opacity-35'}`} style={{ width: `calc(${p.away}% - 3px)` }} />
                 </div>
 
+                {details.market && <MarketStrip p={p} m={details.market} home={home} away={away} />}
+
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
                   <Stat label="Expected goals" value={`${p.expectedGoals.home} – ${p.expectedGoals.away}`} />
                   <Stat label="Over 2.5" value={`${Math.round(p.over25)}%`} />
@@ -588,6 +591,50 @@ function OutcomeTile({ k, label, v, active }: { k: 'H' | 'D' | 'A'; label: strin
       </div>
       <div className={`num text-2xl sm:text-3xl font-extrabold ${active ? color : 'text-ink/70'}`}>{v.toFixed(1)}%</div>
       <div className="num text-[11px] text-faint mt-0.5">fair odds {fairOdds(v)}</div>
+    </div>
+  )
+}
+
+/** Bookmaker line vs the model: odds, margin-free probabilities and the gap on each outcome. */
+function MarketStrip({ p, m, home, away }: { p: Prediction; m: Market; home: Team; away: Team }) {
+  const rows: { k: 'H' | 'D' | 'A'; label: string; odds: number; mkt: number; model: number }[] = [
+    { k: 'H', label: home.shortName || home.name, odds: m.msw.homeWin, mkt: m.probs.home, model: p.home },
+    { k: 'D', label: 'Draw', odds: m.msw.draw, mkt: m.probs.draw, model: p.draw },
+    { k: 'A', label: away.shortName || away.name, odds: m.msw.awayWin, mkt: m.probs.away, model: p.away }
+  ]
+  const age = Math.max(0, Math.round((Date.now() - new Date(m.fetchedAt).getTime()) / 60000))
+  const ageText = age < 60 ? `${age} min ago` : age < 60 * 48 ? `${Math.round(age / 60)} h ago` : `${Math.round(age / 1440)} d ago`
+  return (
+    <div className="mt-4 rounded-xl border border-line/60 bg-surface2/40 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2">
+        <span className="label">Market</span>
+        <span className="text-[11px] text-faint num">
+          {bookLabel(m)} · {m.books} book{m.books === 1 ? '' : 's'} · margin {m.overround}% · {ageText}
+        </span>
+      </div>
+      <div className="flex h-1.5 gap-[3px] mb-3">
+        <div className="rounded-full bg-home/40" style={{ width: `calc(${m.probs.home}% - 3px)` }} />
+        <div className="rounded-full bg-draw/40" style={{ width: `calc(${m.probs.draw}% - 3px)` }} />
+        <div className="rounded-full bg-away/40" style={{ width: `calc(${m.probs.away}% - 3px)` }} />
+      </div>
+      <div className="grid grid-cols-3 gap-3 text-xs">
+        {rows.map(r => {
+          const delta = r.model - r.mkt
+          return (
+            <div key={r.k} className="min-w-0">
+              <div className="truncate text-faint">{r.label}</div>
+              <div className="num text-ink">
+                <span className="font-semibold">{r.odds.toFixed(2)}</span>
+                <span className="text-muted"> · {r.mkt.toFixed(1)}%</span>
+              </div>
+              <div className={`num text-[11px] ${Math.abs(delta) >= 5 ? 'text-ink font-semibold' : 'text-faint'}`} title="Model minus market">
+                model {delta >= 0 ? '+' : ''}
+                {delta.toFixed(1)} pp
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

@@ -299,7 +299,7 @@ function tokens(s: string): string[] {
     .filter(t => t && !STOP.has(t));
 }
 
-function similarity(a: string, b: string): number {
+export function similarity(a: string, b: string): number {
   const na = normalizeName(a);
   const nb = normalizeName(b);
   if (!na || !nb) return 0;

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import axios from 'axios'
 import { API_URL, socket } from '../lib/socket'
-import type { Prediction } from '../lib/predict'
+import { bookLabel, type Market, type Prediction } from '../lib/predict'
 
 interface Team {
   id: number
@@ -34,6 +34,7 @@ interface APIMatch {
     halfTime?: { home: number | null; away: number | null }
   }
   prediction?: Prediction | null
+  market?: Market | null
 }
 
 type Pick = 'H' | 'D' | 'A'
@@ -531,6 +532,33 @@ function ConfidenceTag({ c }: { c: Prediction['confidence'] }) {
   return <span className={`px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wider ${cls}`}>{c}</span>
 }
 
+/** Bookmaker line under the model: thin bar + margin-free percentages, and how far the model sits from it. */
+function MarketRow({ p, m, pick }: { p: Prediction; m: Market; pick: Pick }) {
+  const modelPick = pick === 'H' ? p.home : pick === 'D' ? p.draw : p.away
+  const marketPick = pick === 'H' ? m.probs.home : pick === 'D' ? m.probs.draw : m.probs.away
+  const delta = modelPick - marketPick
+  const seg = (v: number) => <div className="rounded-full bg-faint/50" style={{ width: `calc(${v}% - 3px)` }} />
+  return (
+    <div className="mt-2">
+      <div className="flex h-1 gap-[3px]">
+        {seg(m.probs.home)}
+        {seg(m.probs.draw)}
+        {seg(m.probs.away)}
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-[11px] text-faint">
+        <span className="num">
+          <span className="font-semibold mr-1.5">{bookLabel(m)}</span>
+          {Math.round(m.probs.home)} · {Math.round(m.probs.draw)} · {Math.round(m.probs.away)}
+        </span>
+        <span className={`num ${Math.abs(delta) >= 5 ? 'text-ink font-semibold' : ''}`} title="Model minus market on the pick">
+          {delta >= 0 ? '+' : ''}
+          {delta.toFixed(1)} pp
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function MatchCard({ match, delay = 0 }: { match: APIMatch; delay?: number }) {
   const isLive = LIVE.has(match.status)
   const p = match.prediction
@@ -589,6 +617,7 @@ function MatchCard({ match, delay = 0 }: { match: APIMatch; delay?: number }) {
           <div className="mt-2">
             <ProbRow p={p} pick={pick} />
           </div>
+          {match.market && <MarketRow p={p} m={match.market} pick={pick} />}
           <div className="mt-2.5 flex items-center justify-between text-[11px] text-faint">
             <span className="num">
               xG {p.expectedGoals.home} – {p.expectedGoals.away}
@@ -650,6 +679,7 @@ function SpotlightCard({ match }: { match: APIMatch }) {
         <div className="mt-2">
           <ProbRow p={p} pick={pick} />
         </div>
+        {match.market && <MarketRow p={p} m={match.market} pick={pick} />}
       </div>
     </Link>
   )
