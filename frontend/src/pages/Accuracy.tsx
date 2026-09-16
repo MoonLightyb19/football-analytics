@@ -168,7 +168,7 @@ function Accuracy() {
             </button>
           ))}
         </div>
-        {summary && summary.models.length > 1 && (
+        {summary && summary.models.filter(m => m !== 'poisson-dc-v1').length > 1 && (
           <div className="seg">
             {summary.models
               .filter(m => m !== 'poisson-dc-v1')
@@ -177,13 +177,6 @@ function Accuracy() {
                   {MODEL_LABEL[m] || m}
                 </button>
               ))}
-            <button
-              onClick={() => setModel('ALL')}
-              className={`seg-btn ${model === 'ALL' ? 'seg-btn-active' : ''}`}
-              title="Include the v1 standings baseline"
-            >
-              Compare all
-            </button>
           </div>
         )}
       </div>
