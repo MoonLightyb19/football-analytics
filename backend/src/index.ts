@@ -30,6 +30,11 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
   .map(o => o.trim());
 const corsOrigin = isDev ? true : allowedOrigins;
 
+// Private beta credentials (see the gate below); empty password = open site
+const SITE_USER = process.env.SITE_USER || '';
+const SITE_PASSWORD = process.env.SITE_PASSWORD || '';
+const SITE_AUTH = SITE_PASSWORD ? 'Basic ' + Buffer.from(`${SITE_USER}:${SITE_PASSWORD}`).toString('base64') : '';
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -38,7 +43,9 @@ const io = new Server(server, {
     methods: ['GET', 'POST'],
     credentials: true
   },
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  // Socket.io bypasses Express middleware, so the gate is applied here too
+  allowRequest: (req, cb) => cb(null, !SITE_AUTH || req.headers.authorization === SITE_AUTH)
 });
 
 // Middleware (CSP off: the site loads Google Fonts and club crests from other hosts)
@@ -51,6 +58,20 @@ app.use((req, _res, next) => {
   logger.info(`${req.method} ${req.originalUrl}`);
   next();
 });
+
+// ---------- Private beta gate ----------
+// Set SITE_USER + SITE_PASSWORD (e.g. on Railway) and the whole site — pages and API — asks for them.
+// Uses the browser's own login prompt, so it works on phones and is remembered per device.
+// Health check stays open so the host can monitor the service. Unset = open site (local dev).
+if (SITE_PASSWORD) {
+  app.use((req, res, next) => {
+    if (req.path === '/api/health') return next();
+    if (req.headers.authorization === SITE_AUTH) return next();
+    res.set('WWW-Authenticate', 'Basic realm="Bet To Beat - private beta", charset="UTF-8"');
+    res.status(401).send('Private beta. Sign in to continue.');
+  });
+  logger.info('Private beta gate enabled (SITE_USER / SITE_PASSWORD)');
+}
 
 function sendError(res: express.Response, error: any, fallback: string) {
   const status = error?.response?.status || 500;
