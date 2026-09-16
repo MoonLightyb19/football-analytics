@@ -39,14 +39,14 @@ Poisson model driven by the current league table
   match the result is pulled and the prediction scored.
 - `/accuracy` shows hit rate, Brier score, log loss, calibration, and flat-stake
   P/L at bookmaker odds for the live predictions and — in the Backtest tab — a
-  walk-forward test over 2024-25 against Pinnacle closing odds.
+  walk-forward test over 2025-26 against Pinnacle closing and early odds.
 
 ## Stack
 
 - **Backend**: Node.js, Express, TypeScript, Socket.io, Axios
 - **Frontend**: React 18, Vite, TypeScript, TailwindCSS, socket.io-client
 - **Data**: [Football-Data.org](https://www.football-data.org/) v4 API
-- Planned: PostgreSQL for prediction history and accuracy tracking
+- **Storage**: SQLite (Node's built-in `node:sqlite`, Node ≥ 22.13 / 24) — Postgres later if needed
 
 ## Running locally
 
@@ -71,6 +71,34 @@ FOOTBALL_DATA_BASE_URL=https://api.football-data.org/v4
 PORT=3001
 COMPETITIONS=PL,PD,SA,BL1,FL1,CL,DED,PPL,ELC   # optional override
 LIVE_POLL_MS=60000                             # live-score push interval
+```
+
+## Deploying (Railway)
+
+One container serves the API and the built site; the SQLite file lives on a
+persistent volume so tracking survives restarts and redeploys.
+
+1. Railway → **New Project → Deploy from GitHub repo** → pick this repo.
+   The root `Dockerfile` and `railway.json` are picked up automatically
+   (multi-stage build: `vite build` → `tsc` → Node 24 runtime).
+2. **Variables** on the service:
+   ```
+   FOOTBALL_DATA_API_KEY=...
+   DATA_DIR=/data
+   ```
+   (`NODE_ENV=production`, `PORT` and `STATIC_DIR` are set by the image.)
+3. **Volume**: add one to the service, mount path `/data`.
+4. **Settings → Networking → Generate Domain** (or attach your own; Railway
+   gives you the CNAME). Health check is `/api/health`.
+
+After the first boot the server syncs three seasons of history, fits model v2
+and starts tracking — about a minute. Every `git push` to `main` redeploys.
+
+Local production run (same as the container):
+
+```
+cd frontend && npx vite build
+cd ../backend && npm run build && set NODE_ENV=production && node dist/index.js
 ```
 
 ## API

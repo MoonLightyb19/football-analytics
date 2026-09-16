@@ -3,18 +3,17 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { Server } from 'socket.io';
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
 import dotenv from 'dotenv';
 import logger from './utils/logger';
 
-// Load .env from backend root
+// Load .env from backend root (in production the host injects env vars and there is no file)
 const envResult = dotenv.config();
-console.log('🔍 Loading .env from:', process.cwd());
-if (envResult.error) {
+if (envResult.error && process.env.NODE_ENV !== 'production') {
   console.error('❌ Error loading .env:', envResult.error.message);
-} else {
-  console.log('✅ .env loaded successfully');
-  console.log('API Key:', process.env.FOOTBALL_DATA_API_KEY ? '✅ SET' : '❌ NOT SET');
 }
+console.log('API Key:', process.env.FOOTBALL_DATA_API_KEY ? '✅ SET' : '❌ NOT SET');
 
 // Import after env is loaded
 import footballDataAPI from './services/footballDataAPI';
@@ -41,8 +40,8 @@ const io = new Server(server, {
   transports: ['websocket', 'polling']
 });
 
-// Middleware
-app.use(helmet());
+// Middleware (CSP off: the site loads Google Fonts and club crests from other hosts)
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -324,6 +323,19 @@ setInterval(async () => {
     logger.warn('Live poll failed', { message: error.message });
   }
 }, LIVE_POLL_MS);
+
+// ---------- Static site (production: this one process serves the API and the built frontend) ----------
+
+const STATIC_DIR = process.env.STATIC_DIR || path.resolve(__dirname, '../../frontend/dist');
+if (fs.existsSync(path.join(STATIC_DIR, 'index.html'))) {
+  // Hashed assets can be cached for a long time; index.html must always be fresh
+  app.use(express.static(STATIC_DIR, { index: false, maxAge: '7d' }));
+  app.get(/^(?!\/api\/|\/socket\.io\/).*/, (_req, res) => {
+    res.set('Cache-Control', 'no-cache');
+    res.sendFile(path.join(STATIC_DIR, 'index.html'));
+  });
+  logger.info(`Serving frontend from ${STATIC_DIR}`);
+}
 
 // ---------- Errors ----------
 
